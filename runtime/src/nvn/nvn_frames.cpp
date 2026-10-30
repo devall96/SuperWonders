@@ -711,7 +711,7 @@ Upload staging_alloc(uint64_t size) {
     VkDevice d = vk_device();
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bi.size = size;
-    bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;  // storage: the ASTC decoder
     VkBuffer buffer = VK_NULL_HANDLE;
     if (p_vkCreateBuffer(d, &bi, nullptr, &buffer) != VK_SUCCESS) return upload_alloc(size, 16);
     VkMemoryRequirements req{};
