@@ -184,8 +184,12 @@ bool init() {
         void* pNext = nullptr;
         VkBool32 fields[15] = {};
     } fport;
+    VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     features.pNext = &f13;
-    void** tail = &f13.pNext;
+    f13.pNext = &f12;
+    f12.pNext = &f11;
+    void** tail = &f11.pNext;
     if (has_extension(dext, "VK_EXT_index_type_uint8")) {
         dexts.push_back("VK_EXT_index_type_uint8");
         *tail = &fu8, tail = &fu8.pNext;
@@ -199,6 +203,15 @@ bool init() {
         *tail = &fport, tail = &fport.pNext;
     }
     p_vkGetPhysicalDeviceFeatures2(g_physical, &features);
+    // Of 1.1 and 1.2, only what the translated shaders and samplers use (they are valid only with it enabled):
+    // shaderDrawParameters, for the BaseInstance/BaseVertex the shaders take the instance and vertex ids relative to;
+    // samplerMirrorClampToEdge, for NVN's mirror-clamp wrap modes (nvn_sampler.cpp).
+    VkBool32 mirror_clamp = f12.samplerMirrorClampToEdge, draw_params = f11.shaderDrawParameters;
+    f12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, f12.pNext};
+    f12.samplerMirrorClampToEdge = mirror_clamp;
+    f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, f11.pNext};
+    f11.shaderDrawParameters = draw_params;
+    log("nvn/vk: samplerMirrorClampToEdge %u, shaderDrawParameters %u", mirror_clamp, draw_params);
     g_depth_clip_control = fclip.depthClipControl;
     g_features = features.features;
     // NX_ASTC_DECODE=1|linear|srgb: the CPU decoder even where the GPU has ASTC (to compare the two on one GPU).
