@@ -37,6 +37,28 @@ if(WIN32)
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
+# Vulkan headers (the same registry version tools/gen_vk.py generated from). The loader comes with the GPU driver.
+if(DEFINED ENV{VULKAN_SDK})
+    set(NX_VULKAN_SDK "$ENV{VULKAN_SDK}" CACHE PATH "Vulkan SDK")
+else()
+    set(NX_VULKAN_SDK "C:/VulkanSDK/1.4.357.0" CACHE PATH "Vulkan SDK")
+endif()
+
+# The runtime's own compute shaders (runtime/shaders), compiled to SPIR-V here and #included as word lists: nothing is
+# compiled when the game runs. glslc comes with the Vulkan SDK (the NDK's shader-tools on Android, shaderc on macOS).
+set(NX_SHADER_OUT "${CMAKE_BINARY_DIR}/shaders")
+file(GLOB NX_NDK_SHADER_TOOLS "${ANDROID_NDK}/shader-tools/*")
+find_program(NX_GLSLC glslc HINTS "${NX_VULKAN_SDK}/Bin" "${NX_VULKAN_SDK}/bin" ${NX_NDK_SHADER_TOOLS} REQUIRED)
+foreach(shader astc_decode.comp)
+    set(out "${NX_SHADER_OUT}/${shader}.inc")
+    add_custom_command(OUTPUT "${out}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${NX_SHADER_OUT}"
+        COMMAND "${NX_GLSLC}" -O --target-env=vulkan1.0 -mfmt=num -o "${out}" "${CMAKE_SOURCE_DIR}/runtime/shaders/${shader}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/runtime/shaders/${shader}"
+        COMMENT "glslc ${shader}")
+    list(APPEND NX_SHADER_SOURCES "${out}")
+endforeach()
+
 # Unit tests of runtime pieces that build without the game (docs/nvn/WINDOWS-PLAN.md, "Test plan"): ctest.
 option(NX_TESTS "Build the standalone unit tests" OFF)
 if(NX_TESTS AND NOT ANDROID)
@@ -51,6 +73,13 @@ if(NX_TESTS AND NOT ANDROID)
     add_executable(astc_test tests/astc_test.cpp runtime/src/nvn/nvn_astc.cpp)
     target_include_directories(astc_test PRIVATE runtime/src/nvn)
     add_test(NAME astc COMMAND astc_test --selftest)
+    if(WIN32)  # the GPU decoder against the CPU one (needs a Vulkan device)
+        add_executable(astc_gpu_test tests/astc_gpu_test.cpp runtime/src/nvn/nvn_astc.cpp
+                       "${NX_SHADER_OUT}/astc_decode.comp.inc")
+        target_include_directories(astc_gpu_test PRIVATE runtime/src/nvn "${NX_SHADER_OUT}" "${NX_VULKAN_SDK}/Include")
+        target_link_libraries(astc_gpu_test PRIVATE "${NX_VULKAN_SDK}/Lib/vulkan-1.lib")
+        add_test(NAME astc_gpu COMMAND astc_gpu_test)
+    endif()
     add_executable(shader_cache_test tests/shader_cache_test.cpp runtime/src/nvn/nvn_shaders.cpp
                    runtime/src/nvn/nvn_spirv_reflect.cpp)
     target_compile_definitions(shader_cache_test PRIVATE NX_SHADERS_STANDALONE)
@@ -165,14 +194,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/vk_present.cpp
 )
 file(GLOB NX_GAME_SOURCES CONFIGURE_DEPENDS "${NX_GAME_DIR}/*.cpp")
-list(APPEND NX_RUNTIME_SOURCES ${NX_GAME_SOURCES})
-
-# Vulkan headers (the same registry version tools/gen_vk.py generated from). The loader comes with the GPU driver.
-if(DEFINED ENV{VULKAN_SDK})
-    set(NX_VULKAN_SDK "$ENV{VULKAN_SDK}" CACHE PATH "Vulkan SDK")
-else()
-    set(NX_VULKAN_SDK "C:/VulkanSDK/1.4.357.0" CACHE PATH "Vulkan SDK")
-endif()
+list(APPEND NX_RUNTIME_SOURCES ${NX_GAME_SOURCES} ${NX_SHADER_SOURCES})
 
 if(ANDROID)
     # NativeActivity app: lib<game>.so, entry android_main (android_native_app_glue).
@@ -190,7 +212,7 @@ if(ANDROID)
     target_link_options(${NX_GAME} PRIVATE -u ANativeActivity_onCreate -Wl,-z,max-page-size=16384)
 elseif(APPLE)
     # macOS: SDL3 (window, input, audio) and the Vulkan loader + MoltenVK from Homebrew
-    # (brew install sdl3 vulkan-headers vulkan-loader molten-vk).
+    # (brew install sdl3 vulkan-headers vulkan-loader molten-vk shaderc).
     find_package(SDL3 REQUIRED CONFIG)
     find_path(NX_VULKAN_INCLUDE vulkan/vulkan.h HINTS /opt/homebrew/include /usr/local/include)
     add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_mac.cpp runtime/src/memguard_mac.cpp)
@@ -249,3 +271,5 @@ else()
                             "-Wl,-Map,$<TARGET_FILE_DIR:${NX_GAME}>/${NX_GAME}.map")
     endif()
 endif()
+
+target_include_directories(${NX_GAME} PRIVATE "${NX_SHADER_OUT}")
