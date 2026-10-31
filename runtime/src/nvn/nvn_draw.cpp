@@ -387,6 +387,12 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     std::copy_n(g_state.streams.begin(), key.stream_count, key.streams);
     std::copy_n(g_state.blend, 8, key.blend);
     key.color = g_state.color, key.mask = g_state.mask, key.depth = g_state.depth, key.polygon = g_state.polygon;
+    // NX_FREE_FS=<hash>:<d|c|dc>: draws with that fragment shader without the depth test (d) or culling (c).
+    static const std::string free_fs = std::getenv("NX_FREE_FS") ? std::getenv("NX_FREE_FS") : "";
+    if (fs && free_fs.size() > 17 && free_fs.compare(0, 16, fs->hash) == 0) {
+        if (free_fs.find('d', 17) != std::string::npos) key.depth.depth_test = 0;
+        if (free_fs.find('c', 17) != std::string::npos) key.polygon.cull = 0;
+    }
     key.color_count = t.color_count, key.depth_clamp = g_state.depth_clamp;
     key.alpha_to_coverage = g_state.alpha_to_coverage;
     // NX_SHADOW_COORD_DEBUG substitutes the receiver FS; make its false-colour output visible regardless of the
