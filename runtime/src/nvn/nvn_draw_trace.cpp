@@ -664,14 +664,19 @@ uint32_t read_uint(const uint8_t* p, uint32_t size, uint32_t k) {
 
 void trace_skin(bool indexed, const Cmd& c, const ShaderInfo* vs, const ShaderInfo* fs) {
     static const bool on = std::getenv("NX_TRACE_SKIN") != nullptr;
+    // NX_TRACE_SKIN=<hash>[,<hash>...]: only draws with one of those vertex or fragment shaders (60 at most, not 3 per
+    // shader), and every bone they use.
+    static const char* env = std::getenv("NX_TRACE_SKIN");
+    static const std::string only = env && std::strlen(env) >= 16 ? env : "";
     static std::map<const ShaderInfo*, int> seen;
     static int total = 0;
-    if (!on || !vs || total >= 60) return;
+    if (!on || !vs || total >= 60 || (!only.empty() && only.find(vs->hash) == std::string::npos &&
+                                                     (!fs || only.find(fs->hash) == std::string::npos))) return;
     int int_loc = -1;
     for (const ShaderIo& in : vs->refl.inputs)
         if (in.location < g_state.attribs.size() && int_layout(g_state.attribs[in.location].format).first)
             int_loc = int(in.location);
-    if (int_loc < 0 || seen[vs]++ >= 3) return;
+    if (int_loc < 0 || (only.empty() && seen[vs]++ >= 3)) return;
     total++;
     uint32_t count = uint32_t(indexed ? c.i[0] : c.i[1]);
     log("skin: vs %s fs %s %s count %u base %d first %d x%d", vs->hash.c_str(), fs ? fs->hash.c_str() : "-",
@@ -704,6 +709,7 @@ void trace_skin(bool indexed, const Cmd& c, const ShaderInfo* vs, const ShaderIn
     const VertexAttrib& ia = g_state.attribs[int_loc];
     auto [size, n] = int_layout(ia.format);
     uint32_t max_bone = 0, missing = 0;
+    std::set<uint32_t> used;
     for (uint32_t k = 0; k < count; k++) {
         uint32_t v = idx ? read_uint(idx, isz, k) + uint32_t(c.i[1]) : uint32_t(c.i[0]) + k;
         const uint8_t* p = attrib_at(ia, v);
@@ -713,6 +719,7 @@ void trace_skin(bool indexed, const Cmd& c, const ShaderInfo* vs, const ShaderIn
         }
         uint32_t bones[4] = {};
         for (uint32_t j = 0; j < n; j++) max_bone = std::max(max_bone, bones[j] = read_uint(p, size, j));
+        used.insert(bones[0]);
         if (k >= 4) continue;
         std::string w = "-";
         if (g_state.attribs.size() > 4)
@@ -731,6 +738,11 @@ void trace_skin(bool indexed, const Cmd& c, const ShaderInfo* vs, const ShaderIn
             else
                 log("skin:   bone %u: past c8 (%llu bytes)", bones[j], (unsigned long long)bank_size[8]);
     }
+    if (!only.empty())
+        for (uint32_t u : used)
+            if (bank[8] && uint64_t(u) * 48 + 48 <= bank_size[8])
+                log("skin:   used bone %u: %s | %s | %s", u, floats(bank[8] + u * 48, 4).c_str(),
+                    floats(bank[8] + u * 48 + 16, 4).c_str(), floats(bank[8] + u * 48 + 32, 4).c_str());
     log("skin:  max bone index %u (c8 needs %u bytes, bound %llu); %u vertices outside their buffer", max_bone,
         (max_bone + 1) * 48, (unsigned long long)bank_size[8], missing);
 }
