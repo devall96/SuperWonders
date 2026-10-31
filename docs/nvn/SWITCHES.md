@@ -19,11 +19,13 @@ README.
 | `NX_DUMP_SHADER_MISSES=1` | writes shader blocks that have no SPIR-V yet (to translate offline) | nvn_shaders.cpp |
 | `NX_NVN_REAL=1` | records every proc's real driver address in `nvn_trace.txt` | nvn_trace.cpp |
 | `NX_TRACE_SKIN=1` | the first draws of every vertex shader with an integer vertex input (skinned models): input formats and streams, vertex uniform blocks, the first vertices' bone indices and the bone rows of c8 they select | nvn_draw_trace.cpp |
+| `NX_TRACE_SKIN=<hash>[,<hash>]` | the same for draws with those vertex or fragment shaders only (60), plus every bone each draw uses | nvn_draw_trace.cpp |
 | `NX_TRACE_SKINLISTS=1` | follows command lists that bind skinned programs: recorded (handle, command buffer), called, replayed; dumps the first ones' commands (`P<vs>` binds, `*` skinned, `D` draws, `C<handle>(cmds/draws/programs)` calls, `GONE` for a handle already dropped) | nvn_cmd.cpp |
 | `NX_INT_ATTRIBS=0` | turns off the integer vertex input patch (on by default since #26) | nvn_pipeline.cpp |
 | `NX_ZERO_DRAWS=1` | every draw inside an occlusion query; every 300 frames lists the `vs fs` shader pairs whose draws never passed a single sample (what the scene draws but we lose) | nvn_debug.cpp |
 | `NX_GPU_PROFILE=1` | GPU time per render pass (timestamps at pass starts), top 10 labels every 60 frames: `ms/frame WxH L<level> fs <hash>` | nvn_debug.cpp |
 | `NX_SKIP_FS=<hash>,<hash>` | drops draws with those fragment shaders (measure what they cost, or hide a broken one) | nvn_draw.cpp |
+| `NX_FREE_FS=<hash>:<d\|c\|dc>` | draws with that fragment shader without the depth test (d) or culling (c) | nvn_draw.cpp |
 | `NX_INPUT_SCRIPT="<s>:<button>:<hold s>;..."` | presses buttons at times after the first pad read (A B X Y L R ZL ZR PLUS MINUS LEFT RIGHT UP DOWN; directions also push the stick) | input_script.cpp |
 | `NX_INPUT="<frame>:<button>,..."` | older, per presented frame, 8-frame presses | hle_hid.cpp |
 | `NX_TRACE_FS=1` | every file the game opens or looks for; also counts reads of streamed audio (`.bwav`) | hle_fs.cpp |
