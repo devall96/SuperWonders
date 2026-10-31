@@ -481,3 +481,20 @@ GitHub (issues #43-#48): the glitches in the user's recording of course 1-1 (`do
       before. Diagnosis tool: `NX_FRAME_SIG` (per-frame draw signature, `nvn_draw_trace.cpp`) and
       `tools/find_haze_flicker.py`.
     - Check: the owner's play after the fix: no haze flicker. Formal recordings still to do.
+
+93. **Every Toad showed one eye: the #60 EQUAL slack let the head cover the far eye.**
+    - Toad, Toadette and the other Toads drew one eye; the other was plain skin. The eyes are one mesh (768
+      indices, `vs b69f73aad6d1f664 fs 1b83ae2af085a1d7`, a rigid bone per eye) drawn with EQUAL, depth
+      not written, between the face (`a70acd9e00407790`) and the head (`383b3ea026cfd8b9`, 1407 indices), both
+      `fs d26102316f876f15`, also EQUAL. Neither eye is in the pre-pass; the face lies a hair in front of the head.
+    - Ruled out on the way: bone matrices (both valid, mirror images), vertex buffer ranges, integer bone inputs,
+      depth test and culling of the eye draw itself (`NX_FREE_FS`): with every other Toad draw skipped both eyes
+      show, so a later draw painted over one.
+    - Cause: #60's bias (4 units plus a quarter per unit of slope) let the head pass where only the face should. On
+      the side of the face turned from the camera the slope is steep, the bias reached past the face-to-head gap,
+      and the head covered that eye. Even the constant 4 units were too much for Toadette.
+    - Fix (`nvn_raster.cpp`): `NX_EQUAL_SLACK` defaults to 0 on Windows and desktop Linux, where both passes'
+      depth came out alike (no black silhouettes in the opening, world map or course without it); Metal and Adreno
+      keep 4. `NX_EQUAL_SLACK=4`: as before.
+    - Check: hidden runs of the opening course as Blue Toad and Yellow Toad: both eyes; world map and a course clean.
+
