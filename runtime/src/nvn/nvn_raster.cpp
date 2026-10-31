@@ -56,7 +56,14 @@ void SetDepthClamp(CPU& c) {
 namespace {
 float equal_slack_units() {
     static const char* env = std::getenv("NX_EQUAL_SLACK");
+    // Off by default on desktop Vulkan drivers: they computed both passes' depth alike (no black silhouettes without
+    // it), and with it a Toad's head, drawn after its eyes over a face mesh a hair in front of it, covered the eye on
+    // the side turned away (every Toad showed one eye). Metal and Adreno compile the stages apart, so they keep it.
+#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+    static const float units = env ? float(std::atof(env)) : 0.0f;
+#else
     static const float units = env ? float(std::atof(env)) : 4.0f;
+#endif
     return units;
 }
 }  // namespace
