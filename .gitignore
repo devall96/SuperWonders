@@ -1,0 +1,19 @@
+# Everything derived from the game, keys and firmware stays local. Never commit.
+private/
+__pycache__/
+*.pyc
+tools/wonder_builder/bin/
+tools/wonder_builder/obj/
+
+# Game dumps must never be committed, wherever they are dropped.
+*.xci
+*.xci.rar
+*.nsp
+*.nsz
+*.xcz
+*.rar
+*.keys
+
+# Local tooling state and run logs.
+nx.log
+*.log
