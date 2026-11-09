@@ -1,0 +1,57 @@
+name: Bug report
+description: Building, graphics, audio, controls, saves, performance, or game logic.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read the README and check existing issues first.
+
+        Do not attach or link game files, keys, firmware, compiled game builds, or shader caches. Issues containing these files will be closed.
+  - type: checkboxes
+    id: duplicates
+    attributes:
+      label: Existing issues
+      options:
+        - label: I read the [README](https://github.com/vfjoo888/SuperWonders#readme) and [searched open and closed issues](https://github.com/vfjoo888/SuperWonders/issues?q=is%3Aissue) for this bug.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Building from source
+        - Graphics
+        - Audio
+        - Controls and input
+        - Saves
+        - Performance and stutter
+        - Game logic
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit
+      description: The commit you built, from `git rev-parse --short HEAD`.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: GPU, driver, and Windows version
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What happened and how to reproduce it
+      description: For a build problem, paste the command and the last lines of its output.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: If the game started, attach `data/nx.log` from the folder containing `wonder.exe`.
