@@ -21,6 +21,12 @@ I have tested the project on a Windows PC with an **NVIDIA GeForce RTX 5060 Ti**
 
 **AMD and Intel graphics cards have not been tested**, so I can't confirm compatibility with them. Other systems and GPUs may behave differently.
 
+## Known problems
+
+As of now, there is 1 known problem.
+
+When using a different internal resolution, shadows may not behave correctly. If you're experiencing this kind of bug, please set the internal resolution to "Original/Dynamic". A fix is on the way.
+
 ## AI assistance
 
 I used AI tools extensively to help write and revise the code, build scripts, and documentation. I directed the work and ran the builds and gameplay checks described above. AI-assisted code can still have bugs; the limited testing coverage is part of the project's current status.
