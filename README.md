@@ -22,6 +22,16 @@ I have tested the project on a Windows PC with an **NVIDIA GeForce RTX 5060 Ti**
 
 **AMD and Intel graphics cards have not been tested**, so I can't confirm compatibility with them. Other systems and GPUs may behave differently.
 
+## Minimum hardware (provisional)
+
+I have not established a formally tested minimum yet. The current Windows build expects:
+
+- **CPU:** a 64-bit x86 processor with AVX2 support.
+- **GPU:** a graphics card and driver supporting Vulkan 1.3. The minimum amount of video memory has not been verified.
+- **System RAM:** 16 GB as a practical baseline. 32 GB is recommended when building the project, especially with a higher worker count; lowering the worker count can reduce build memory use.
+
+These are preliminary requirements inferred from the build and runtime, not a guarantee that every compatible-looking PC will run the game well. Testing is still limited to the hardware and game area described above.
+
 ## Known problems
 
 As of now, there aren't known glitches or bugs.
