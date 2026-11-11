@@ -41,6 +41,8 @@ As of now, there aren't known glitches or bugs.
 I'm planning to add support for ultrawide **21:9** and super-ultrawide **32:9** displays.
 A Linux port may be in the future of the project. As of now, no progress has been done.
 
+I also want to investigate recording graphics pipeline states (PSOs) during gameplay and using that data to compile more shaders ahead of time. This could reduce stutter when revisiting content, but it may not cover shaders that only appear in areas or situations that have not yet been recorded. I still need to assess how to capture and share this data and whether tools such as SCS Killer can fit into the build workflow.
+
 ## AI assistance
 
 I used AI tools extensively to help write and revise the code, build scripts, and documentation. I directed the work and ran the builds and gameplay checks described above. AI-assisted code can still have bugs; the limited testing coverage is part of the project's current status.
