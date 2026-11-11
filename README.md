@@ -6,26 +6,30 @@ This repository contains source code and project documentation. It does not cont
 
 ## What I've done
 
-- I got a Windows build running and tested it by playing in the game's tutorial area.
+- I got a Windows build running and tested it by playing in the game's tutorial area and W1.
 - I added an in-game menu opened with **F1**, organized into Video, Audio, and Controls sections.
-- The Video section includes fullscreen and internal-resolution options. I checked the 720p and 1440p settings in the tutorial area.
-- The Audio section lets me adjust the game volume.
+- You can edit game language via the "Audio" section and under the tab "Game Languages". Only English, Italian, French and German are supported as of now.
+- The Video section includes fullscreen and internal-resolution options. I checked the 720p and 1440p settings in the tutorial area and W1.
+- The Audio section lets you adjust the game volume.
 - The menu can be displayed in English, Italian, German, or French.
 - The Controls section has Xbox/DualSense and Nintendo button-layout presets. The Windows runtime includes keyboard, XInput, and DualSense input support.
-- I changed the Windows build so the game can be started directly from its executable, with an orange-flower application icon.
+- You can remap the controls in the "Controls" section 
 - I prepared a separate Windows GUI Builder package. It will be distributed as a ZIP in [GitHub Releases](https://github.com/vfjoo888/SuperWonders/releases); it builds a local game output from ExeFS and RomFS folders supplied by the user.
 
 ## Testing and compatibility
 
-I have tested the project on a Windows PC with an **NVIDIA GeForce RTX 5060 Ti**. So far, I have played only in the tutorial area. I haven't noticed visible graphics glitches there, but I have not comprehensively tested the rest of the game, including later worlds, courses, cutscenes, and edge cases.
+I have tested the project on a Windows PC with an **NVIDIA GeForce RTX 5060 Ti**. So far, I have played only in the tutorial area and all of world 1. I haven't noticed visible graphics glitches there, but I have not comprehensively tested the rest of the game, including later worlds, courses, cutscenes, and edge cases.
 
 **AMD and Intel graphics cards have not been tested**, so I can't confirm compatibility with them. Other systems and GPUs may behave differently.
 
 ## Known problems
 
-As of now, there is 1 known problem.
+As of now, there aren't known glitches or bugs.
 
-When using a different internal resolution, shadows may not behave correctly. If you're experiencing this kind of bug, please set the internal resolution to "Original/Dynamic". A fix is on the way.
+## Future features
+
+I'm planning to add support for ultrawide **21:9** and super-ultrawide **32:9** displays.
+A Linux port may be in the future of the project. As of now, no progress has been done.
 
 ## AI assistance
 
