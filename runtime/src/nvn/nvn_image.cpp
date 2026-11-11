@@ -1,9 +1,11 @@
 // The VkImage behind an NVN texture, and its layout transitions (split from nvn_vk.cpp). Under the GPU lock.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <map>
 #include <memory>
+#include <set>
 #include <tuple>
 
 #include "nvn_vk.h"
@@ -21,14 +23,20 @@ float render_scale_for(const Texture& texture) {
     static float scene_scale = 0.0f;  // the last full-size game target determines scale for its smaller post passes
     if (scene_scale == 0.0f) scene_scale = float(target_width) / 1920.0f;
     const uint64_t ratio_width = uint64_t(texture.width) * 9, ratio_height = uint64_t(texture.height) * 16;
-    bool eligible = ((texture.flags & 0x8) || texture.render_target.load(std::memory_order_relaxed)) &&
-                    texture.levels <= 1 && texture.target == 1 && texture.width >= 16 && texture.height >= 9 &&
-                    ratio_width + 16 >= ratio_height && ratio_width <= ratio_height + 16;
-    if (eligible && (texture.flags & 0x8) && texture.width >= 1360) {
+    const bool render_target = (texture.flags & 0x8) || texture.render_target.load(std::memory_order_relaxed);
+    const bool eligible = render_target && texture.levels <= 1 && texture.target == 1 && texture.width >= 16 &&
+                          texture.height >= 9;
+    const bool wide = ratio_width + 16 >= ratio_height && ratio_width <= ratio_height + 16;
+    if (eligible && wide && (texture.flags & 0x8) && texture.width >= 1360) {
         scene_scale = float(target_width) / float(texture.width);
         return scene_scale;
     }
-    if (eligible) return scene_scale;
+    // Wonder's D24 shadow maps (NVN format 0x32) are square and track the guest's dynamic scene size
+    // at about 16/15 of its width. Keep their host images and depth-only viewports at the same scale
+    // as the scene; leaving these images at 1.0 while scaling 16:9 scene targets misaligns shadows.
+    const bool shadow_depth = eligible && (texture.flags & 0x8) && texture.format == 0x32 &&
+                              texture.width == texture.height && texture.width >= 1360;
+    if (shadow_depth || (eligible && wide)) return scene_scale;
     return 1.0f;
 }
 
@@ -99,14 +107,28 @@ std::map<StorageKey, std::weak_ptr<GpuImage>> g_live_images;
 GpuImage* image_of(uint64_t guest) {
     Texture* t = get<Texture>(guest);
     if (!t) return nullptr;
-    if (t->image) return t->image.get();
+    // NX_REFRESH_SCALED_RT=1: diagnostic experiment for the 64x36 RGBA8 screen-space shadow input.
+    // Its scene scale can change with dynamic guest resolution while the NVN texture object remains alive.
+    static const bool refresh_scaled_rt = std::getenv("NX_REFRESH_SCALED_RT") != nullptr;
+    const bool scaled_scene_rt = refresh_scaled_rt && (t->flags & 0x8) && t->levels <= 1 && t->target == 1 &&
+                                 t->format == 0x3f && t->width == 64 && t->height == 36;
+    const float target_scale = scaled_scene_rt ? render_scale_for(*t) : 0.0f;
+    if (t->image) {
+        if (!scaled_scene_rt || t->image->render_scale == target_scale) return t->image.get();
+        static unsigned refreshed = 0;
+        if (refreshed++ < 32)
+            log("nvn/vk: refresh scaled scene RT %llx pool %llx offset %llx %ux%u scale %.3f -> %.3f",
+                (unsigned long long)guest, (unsigned long long)t->pool, (unsigned long long)t->offset,
+                t->width, t->height, t->image->render_scale, target_scale);
+        t->image.reset();
+    }
     uint32_t swizzle = uint32_t(t->swizzle[0]) | uint32_t(t->swizzle[1]) << 8 | uint32_t(t->swizzle[2]) << 16 |
                   uint32_t(t->swizzle[3]) << 24;
     // Swizzles apply when sampling (sampled_view, #44): neither the key's nor a pool view's keeps textures from sharing.
     // With them, the shadow map and the UI's text strips were sampled as stale uploads (#46). Env: bisecting.
     static const bool key_swizzle = std::getenv("NX_KEY_SWIZZLE") != nullptr;
     if (!key_swizzle) swizzle = 0;
-    const float target_scale = render_scale_for(*t);
+    const float image_scale = scaled_scene_rt ? target_scale : render_scale_for(*t);
     // Scale is intentionally not part of this key: NVN texture aliases must keep sharing the same Vulkan image.
     StorageKey key{t->memory, t->format, t->width, t->height, t->depth, t->levels, t->target, t->samples, swizzle};
     static const bool share = std::getenv("NX_NO_IMAGE_SHARE") == nullptr;  // bisecting
@@ -115,17 +137,23 @@ GpuImage* image_of(uint64_t guest) {
     bool widened = t->format == 0x1 && t->pool_swizzle == 0x02010101u;
     if (share && t->memory && (old_rule ? t->pool_swizzle == 0 : !widened))
         if (auto it = g_live_images.find(key); it != g_live_images.end())
-            if (auto shared = it->second.lock(); shared && shared->image && !shared->alpha_from_r) {
+            if (auto shared = it->second.lock(); shared && shared->image && !shared->alpha_from_r &&
+                (!scaled_scene_rt || shared->render_scale == image_scale)) {
                 static uint64_t shares = 0;
                 if (++shares % 1000 == 1) log("nvn/vk: %llu textures shared an image with another", (unsigned long long)shares);
+                shared->pool = t->pool, shared->pool_offset = t->offset, shared->pool_size = t->storage_size;
                 t->image = shared;
                 return shared.get();
             }
-    if ((t->image = reuse_image(*t)); t->image && t->image->render_scale == target_scale) return t->image.get();
+    if ((t->image = reuse_image(*t)); t->image && t->image->render_scale == image_scale) {
+        t->image->pool = t->pool, t->image->pool_offset = t->offset, t->image->pool_size = t->storage_size;
+        return t->image.get();
+    }
     t->image.reset();
     auto img = std::make_shared<GpuImage>();
     img->format = bc_host_decode(t->format) ? bc_decoded_format(t->format) : vk_format(t->format);  // nvn_bc.cpp
     img->nvn_format = t->format;
+    img->pool = t->pool, img->pool_offset = t->offset, img->pool_size = t->storage_size;
     if (t->format == 0x1 && t->pool_swizzle == 0x02010101u) {
         img->format = VK_FORMAT_R8G8B8A8_UNORM;
         img->alpha_from_r = true;
@@ -139,7 +167,7 @@ GpuImage* image_of(uint64_t guest) {
     img->logical_width = std::max(1u, t->width);
     img->logical_height = (t->target == 0 || t->target == 3) && !one_d ? 1u : std::max(1u, t->height);
     // Guest pool allocations and layouts stay unchanged; only this Vulkan image changes size.
-    img->render_scale = target_scale;
+    img->render_scale = image_scale;
     img->width = std::max(1u, uint32_t(std::lround(img->logical_width * img->render_scale)));
     img->height = std::max(1u, uint32_t(std::lround(img->logical_height * img->render_scale)));
     img->levels = std::max(1u, t->levels);
@@ -241,6 +269,56 @@ GpuImage* image_of(uint64_t guest) {
     t->image = img;
     if (t->memory) g_live_images[key] = img;
     return img.get();
+}
+
+GpuImage* latest_overlapping_shadow_image(uint64_t guest, GpuImage* image) {
+    static const bool enabled = std::getenv("NX_SHADOW_OVERLAP_ALIAS") != nullptr;
+    static const bool trace_cross_size = std::getenv("NX_TRACE_SHADOW_OVERLAP_CROSS") != nullptr;
+    if ((!enabled && !trace_cross_size) || !image) return image;
+    Texture* t = get<Texture>(guest);
+    if (!t || t->format != 0x32 || t->width != t->height || t->width < 1360 || !t->pool || !t->storage_size)
+        return image;
+    const bool can_alias = enabled && t->width == 2048;
+    const uint64_t end = t->offset + t->storage_size;
+    GpuImage* newest = image;
+    static std::set<std::array<uint64_t, 8>> logged_cross_overlaps;
+    static unsigned cross_overlap_logs = 0;
+    for (auto& entry : g_live_images) {
+        auto candidate = entry.second.lock();
+        if (!candidate || candidate.get() == image || !candidate->image || !candidate->rendered ||
+            candidate->pool != t->pool || candidate->nvn_format != t->format ||
+            candidate->logical_width != candidate->logical_height || candidate->logical_width < 1360 ||
+            !candidate->pool_size)
+            continue;
+        const uint64_t candidate_end = candidate->pool_offset + candidate->pool_size;
+        if (candidate->pool_offset >= end || candidate_end <= t->offset) continue;
+        if (trace_cross_size && cross_overlap_logs < 256 && candidate->logical_width != t->width &&
+            candidate->rendered_at > image->rendered_at) {
+            std::array<uint64_t, 8> key{t->pool, t->offset, t->storage_size, t->width, candidate->pool_offset,
+                                        candidate->pool_size, candidate->logical_width, candidate->rendered_at};
+            if (logged_cross_overlaps.insert(key).second) {
+                cross_overlap_logs++;
+                log("shadow-cross-overlap frame %llu texture %llx map %ux%u offset %llx size %llx rendered-at %llu "
+                    "overlaps newer map %ux%u offset %llx size %llx rendered-at %llu",
+                    (unsigned long long)g_frame.load(std::memory_order_relaxed), (unsigned long long)guest,
+                    t->width, t->height, (unsigned long long)t->offset, (unsigned long long)t->storage_size,
+                    (unsigned long long)image->rendered_at, candidate->logical_width, candidate->logical_height,
+                    candidate->pool_offset, (unsigned long long)candidate->pool_size,
+                    (unsigned long long)candidate->rendered_at);
+            }
+        }
+        if (can_alias && candidate->logical_width == t->width && candidate->rendered_at > newest->rendered_at)
+            newest = candidate.get();
+    }
+    if (newest == image) return image;
+    static std::set<std::array<uint64_t, 3>> logged_aliases;
+    std::array<uint64_t, 3> key{t->pool, t->offset, newest->pool_offset};
+    if (logged_aliases.insert(key).second)
+        log("shadow-map alias redirect frame %llu texture %llx offset %llx -> rendered offset %llx serial %llu",
+            (unsigned long long)g_frame.load(std::memory_order_relaxed), (unsigned long long)guest,
+            (unsigned long long)t->offset, (unsigned long long)newest->pool_offset,
+            (unsigned long long)newest->rendered_at);
+    return newest;
 }
 
 void transition(VkCommandBuffer cb, GpuImage& img, VkImageLayout to) {

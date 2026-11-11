@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <set>
 #include <string>
@@ -11,10 +12,19 @@
 
 #include "nvn_pipeline.h"
 #include "platform.h"
+#include "shadow_coord_debug_spv.h"
 
 namespace nx::nvn {
 
 using namespace nx::vk;
+
+bool shadow_coord_debug_on() {
+    static const bool enabled = [] {
+        const char* e = std::getenv("NX_SHADOW_COORD_DEBUG");
+        return e && e[0] == '1';
+    }();
+    return enabled;
+}
 
 // NVN views carry a format: the game renders into RGBA8 textures through sRGB views (the GPU encodes on write and
 // blends in linear) and samples them the same way. Ignoring it lost one conversion per draw: far too much contrast
@@ -75,7 +85,14 @@ VkShaderModule module_of(const ShaderInfo* s, const uint8_t* kinds = nullptr, ui
     if (!m) {
         bool is_patched = false;
         const uint8_t* int_kinds = k != std::string(16, '\0') ? reinterpret_cast<const uint8_t*>(k.data()) : nullptr;
-        std::vector<uint32_t> code = patched_spirv(s, int_kinds, unwritten, &is_patched);
+        std::vector<uint32_t> code;
+        if (shadow_coord_debug_on() && s->stage == ShaderStage::Fragment && s->hash == "1872caa47df3cd7a") {
+            code.assign(std::begin(kShadowCoordDebugSpirv), std::end(kShadowCoordDebugSpirv));
+            log("nvn/vk: NX_SHADOW_COORD_DEBUG replaces fragment shader %s with projected-coordinate view",
+                s->hash.c_str());
+        } else {
+            code = patched_spirv(s, int_kinds, unwritten, &is_patched);
+        }
         if (s->stage == ShaderStage::Vertex) clip_z_module(s, code);  // NX_CLIP_Z_PATCH (nvn_spirv_clip.cpp)
         VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         ci.codeSize = code.size() * 4;
@@ -558,7 +575,9 @@ GpuImage* ensure_contents(VkCommandBuffer cb, uint64_t texture) {
 VkImageView sampled_view(VkCommandBuffer cb, uint64_t texture, const ImageShape& shape, const ViewInfo* view,
                          VkImageLayout* layout) {
     *layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    GpuImage* img = ensure_contents(cb, texture);
+    GpuImage* original = image_of(texture);
+    GpuImage* alias = latest_overlapping_shadow_image(texture, original);
+    GpuImage* img = alias != original ? alias : ensure_contents(cb, texture);
     static uint64_t no_image = 0, incompatible = 0;
     if (!img) {
         if (++no_image % 100000 == 1) log("nvn/vk: dummy sampled: %llu with no image, %llu with an incompatible view",

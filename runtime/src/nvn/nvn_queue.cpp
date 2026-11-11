@@ -362,6 +362,7 @@ void QueuePresentTexture(CPU& c) {
     plat::perf_hint_thread();
     if (work_from) plat::perf_hint_frame(int64_t(t_in - work_from));
     if (auto* w = get<Window>(c.x[1])) {
+        plat::overlay_game_interval(w->interval);
         // At most two presents queued: the game runs at most two frames ahead of the replay.
         static uint64_t queued[2] = {};
         static int next_slot = 0;

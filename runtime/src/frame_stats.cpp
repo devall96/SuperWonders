@@ -189,6 +189,7 @@ void frame_presented() {
     frame_thread_tick(0);
     static uint64_t last = 0, n = 0, bins[7] = {};
     uint64_t now = monotonic_ns();
+    overlay_presented(now);
     if (last) {
         double ms = double(now - last) / 1e6;
         bins[ms < 14 ? 0 : ms < 19 ? 1 : ms < 25 ? 2 : ms < 31 ? 3 : ms < 36 ? 4 : ms < 50 ? 5 : 6]++;

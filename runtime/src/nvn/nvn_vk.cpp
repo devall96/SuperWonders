@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "nvn_vk.h"
+#include "nvn_shader_prepare.h"
 #include "platform.h"
 
 #include <nx/game.h>
@@ -33,6 +34,7 @@ namespace {
 
 std::recursive_mutex g_gpu;  // the whole GPU side: one submitting thread at a time
 bool g_ready = false, g_failed = false;
+bool g_shader_prepare_checked = false;
 VkInstance g_instance = VK_NULL_HANDLE;
 VkPhysicalDevice g_physical = VK_NULL_HANDLE;
 VkDevice g_device = VK_NULL_HANDLE;
@@ -537,6 +539,7 @@ void gpu_submit(const std::vector<std::shared_ptr<CmdList>>& lists, std::shared_
     for (auto& l : lists) lists_epoch = std::max(lists_epoch, l->epoch);
     ReplayScope replay(lists_epoch);  // the texture mark (#55, #57), then drain_objects (under the GPU lock, #50)
     if (!init()) return;
+    if (!g_shader_prepare_checked) g_shader_prepare_checked = true, prepare_shader_catalog();
     bool async = async_gpu();
     if (!async) {  // the previous submit was waited for: all of it is free
         free_retired_images(UINT64_MAX);
@@ -610,6 +613,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
     PresentTimer timer;
     drain_objects();  // under the GPU lock, as in gpu_submit
     if (!init()) return;
+    if (!g_shader_prepare_checked) g_shader_prepare_checked = true, prepare_shader_catalog();
     if (!async_gpu() || pipelined()) free_retired_images(async_gpu() ? frame_completed() : UINT64_MAX);
     if (plat::headless()) return present_headless(texture);
     if (plat::window_minimized()) return;

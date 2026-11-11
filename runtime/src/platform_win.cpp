@@ -1,14 +1,19 @@
 // Windows host: memory, threads, time, files, the game window (F11 / Alt+Enter fullscreen), XInput/SDL gamepads + keyboard,
 // XAudio2, the Vulkan loader and win32 surface, crash handler, hardware watchpoints (NX_WATCH) and main().
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 #include <windows.h>
 #include <xaudio2.h>
@@ -136,7 +141,50 @@ std::string data_root() {
 
 static PcMenuState g_pc_settings;
 static std::atomic<IXAudio2MasteringVoice*> g_master_voice{nullptr};
-static std::atomic<int> g_controller_preset{0};
+static std::array<std::atomic<int>, kPcControlCount> g_keyboard_bindings{};
+static std::array<std::atomic<int>, kPcControlCount> g_controller_bindings{};
+static std::atomic<HWND> g_metrics_window{nullptr};
+static std::atomic<bool> g_metrics_enabled{false}, g_metric_fps{true}, g_metric_one_percent_low{true};
+static std::atomic<bool> g_metric_game_speed{true}, g_metric_frametime_graph{true};
+static std::atomic<int> g_metrics_position{0}, g_game_present_interval{1};
+static constexpr size_t kFrameHistory = 300;
+static std::mutex g_metrics_mutex;
+static std::array<double, kFrameHistory> g_frame_intervals_ms{};
+static size_t g_frame_interval_next = 0, g_frame_interval_count = 0;
+static uint64_t g_previous_present_ns = 0;
+static constexpr uint64_t kPadActionBits[kPcControlCount] = {
+    kA, kB, kX, kY, kL, kR, kZL, kZR, kPlus, kMinus, kStickL, kStickR, kLeft, kUp, kRight, kDown,
+};
+
+static void metrics_reposition();
+
+static bool metrics_has_content() {
+    return g_metrics_enabled.load(std::memory_order_relaxed) &&
+           (g_metric_fps.load(std::memory_order_relaxed) || g_metric_one_percent_low.load(std::memory_order_relaxed) ||
+            g_metric_game_speed.load(std::memory_order_relaxed) ||
+            g_metric_frametime_graph.load(std::memory_order_relaxed));
+}
+
+static void apply_metrics_settings(const PcMenuState& state) {
+    g_metrics_enabled.store(state.metrics_enabled, std::memory_order_relaxed);
+    g_metric_fps.store(state.metric_fps, std::memory_order_relaxed);
+    g_metric_one_percent_low.store(state.metric_one_percent_low, std::memory_order_relaxed);
+    g_metric_game_speed.store(state.metric_game_speed, std::memory_order_relaxed);
+    g_metric_frametime_graph.store(state.metric_frametime_graph, std::memory_order_relaxed);
+    g_metrics_position.store(std::clamp(state.overlay_position, 0, 3), std::memory_order_relaxed);
+    metrics_reposition();
+}
+
+static void apply_input_bindings(const PcMenuState& state) {
+    for (size_t i = 0; i < kPcControlCount; ++i) {
+        g_keyboard_bindings[i].store(std::clamp(state.keyboard_bindings[i], 0, 255), std::memory_order_relaxed);
+        const int controller = state.controller_custom_mask & (1u << i)
+                                   ? state.controller_bindings[i]
+                                   : pc_default_controller_binding(i, state.controller_preset);
+        g_controller_bindings[i].store(std::clamp(controller, 0, int(kPcControlCount) - 1),
+                                       std::memory_order_relaxed);
+    }
+}
 
 static void save_pc_settings() {
     std::ofstream file(data_root() + "/pc-settings.ini", std::ios::trunc);
@@ -144,7 +192,17 @@ static void save_pc_settings() {
     file << "width=" << g_pc_settings.width << "\nheight=" << g_pc_settings.height << "\nvolume=" << g_pc_settings.volume
          << "\ninternal_resolution=" << g_pc_settings.internal_resolution << "\nmuted=" << g_pc_settings.muted << "\nfullscreen=" << g_pc_settings.fullscreen
          << "\nalways_on_top=" << g_pc_settings.always_on_top << "\nlanguage=" << g_pc_settings.language
-         << "\ncontroller_preset=" << g_pc_settings.controller_preset << '\n';
+         << "\ngame_language=" << g_pc_settings.game_language
+         << "\ncontroller_preset=" << g_pc_settings.controller_preset
+         << "\nmetrics_enabled=" << g_pc_settings.metrics_enabled << "\nmetric_fps=" << g_pc_settings.metric_fps
+         << "\nmetric_one_percent_low=" << g_pc_settings.metric_one_percent_low
+         << "\nmetric_game_speed=" << g_pc_settings.metric_game_speed
+         << "\nmetric_frametime_graph=" << g_pc_settings.metric_frametime_graph
+         << "\noverlay_position=" << g_pc_settings.overlay_position
+         << "\ncontroller_custom_mask=" << g_pc_settings.controller_custom_mask << '\n';
+    for (size_t i = 0; i < kPcControlCount; ++i)
+        file << "keyboard_" << i << '=' << g_pc_settings.keyboard_bindings[i] << '\n'
+             << "controller_" << i << '=' << g_pc_settings.controller_bindings[i] << '\n';
 }
 
 static void load_pc_settings() {
@@ -160,11 +218,33 @@ static void load_pc_settings() {
         else if (std::sscanf(line.c_str(), "fullscreen=%d", &value) == 1) g_pc_settings.fullscreen = value != 0;
         else if (std::sscanf(line.c_str(), "always_on_top=%d", &value) == 1) g_pc_settings.always_on_top = value != 0;
         else if (std::sscanf(line.c_str(), "language=%d", &value) == 1) g_pc_settings.language = std::clamp(value, 0, 3);
+        else if (std::sscanf(line.c_str(), "game_language=%d", &value) == 1) g_pc_settings.game_language = std::clamp(value, 0, 3);
         else if (std::sscanf(line.c_str(), "controller_preset=%d", &value) == 1)
             g_pc_settings.controller_preset = std::clamp(value, 0, 1);
+        else if (std::sscanf(line.c_str(), "metrics_enabled=%d", &value) == 1) g_pc_settings.metrics_enabled = value != 0;
+        else if (std::sscanf(line.c_str(), "metric_fps=%d", &value) == 1) g_pc_settings.metric_fps = value != 0;
+        else if (std::sscanf(line.c_str(), "metric_one_percent_low=%d", &value) == 1)
+            g_pc_settings.metric_one_percent_low = value != 0;
+        else if (std::sscanf(line.c_str(), "metric_game_speed=%d", &value) == 1)
+            g_pc_settings.metric_game_speed = value != 0;
+        else if (std::sscanf(line.c_str(), "metric_frametime_graph=%d", &value) == 1)
+            g_pc_settings.metric_frametime_graph = value != 0;
+        else if (std::sscanf(line.c_str(), "overlay_position=%d", &value) == 1)
+            g_pc_settings.overlay_position = std::clamp(value, 0, 3);
+        else if (std::sscanf(line.c_str(), "controller_custom_mask=%u", &g_pc_settings.controller_custom_mask) == 1) {}
+        else {
+            int index = -1, binding = -1;
+            if (std::sscanf(line.c_str(), "keyboard_%d=%d", &index, &binding) == 2 &&
+                index >= 0 && index < int(kPcControlCount) && binding >= 0 && binding <= 255)
+                g_pc_settings.keyboard_bindings[size_t(index)] = binding;
+            else if (std::sscanf(line.c_str(), "controller_%d=%d", &index, &binding) == 2 &&
+                     index >= 0 && index < int(kPcControlCount) && binding >= 0 && binding < int(kPcControlCount))
+                g_pc_settings.controller_bindings[size_t(index)] = binding;
+        }
     }
     nx::set_internal_resolution_preset(g_pc_settings.internal_resolution);
-    g_controller_preset.store(g_pc_settings.controller_preset, std::memory_order_relaxed);
+    nx::set_game_language(g_pc_settings.game_language);
+    apply_input_bindings(g_pc_settings);
 }
 
 static void set_game_volume() {
@@ -182,6 +262,8 @@ static std::wstring widen(const char* s) { return std::wstring(s, s + std::strle
 static constexpr DWORD kWindowed = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
 static bool g_fullscreen = false;
 static WINDOWPLACEMENT g_placement{sizeof(WINDOWPLACEMENT)};
+static std::atomic<uint64_t> g_shader_compiled{0}, g_shader_total{0};
+static std::atomic<bool> g_shader_progress_visible{false};
 static void toggle_fullscreen(HWND h);
 
 static void resize_window_client(HWND h, int width, int height) {
@@ -198,6 +280,169 @@ static void resize_window_client(HWND h, int width, int height) {
     SetWindowPos(h, nullptr, std::max(0, x), std::max(0, y), outer_w, outer_h, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+static int metrics_overlay_height(bool graph, int rows) { return 42 + rows * 23 + (graph ? 92 : 0); }
+
+static void metrics_paint(HWND h) {
+    PAINTSTRUCT ps{};
+    HDC dc = BeginPaint(h, &ps);
+    RECT client{};
+    GetClientRect(h, &client);
+    HBRUSH key = CreateSolidBrush(RGB(0, 0, 0));
+    FillRect(dc, &client, key);
+    DeleteObject(key);
+
+    const bool show_fps = g_metric_fps.load(std::memory_order_relaxed);
+    const bool show_low = g_metric_one_percent_low.load(std::memory_order_relaxed);
+    const bool show_speed = g_metric_game_speed.load(std::memory_order_relaxed);
+    const bool show_graph = g_metric_frametime_graph.load(std::memory_order_relaxed);
+    const int rows = int(show_fps) + int(show_low) + int(show_speed);
+    RECT panel{2, 2, client.right - 2, client.bottom - 2};
+    HBRUSH panel_brush = CreateSolidBrush(RGB(20, 27, 40));
+    HPEN border = CreatePen(PS_SOLID, 1, RGB(83, 112, 151));
+    HGDIOBJ old_brush = SelectObject(dc, panel_brush);
+    HGDIOBJ old_pen = SelectObject(dc, border);
+    RoundRect(dc, panel.left, panel.top, panel.right, panel.bottom, 12, 12);
+    SelectObject(dc, old_brush);
+    SelectObject(dc, old_pen);
+    DeleteObject(panel_brush);
+    DeleteObject(border);
+
+    std::array<double, kFrameHistory> samples{};
+    size_t count = 0;
+    {
+        std::lock_guard lock(g_metrics_mutex);
+        count = g_frame_interval_count;
+        const size_t start = (g_frame_interval_next + kFrameHistory - count) % kFrameHistory;
+        for (size_t i = 0; i < count; ++i) samples[i] = g_frame_intervals_ms[(start + i) % kFrameHistory];
+    }
+    double sum = 0.0;
+    const size_t recent = std::min<size_t>(count, 60);
+    for (size_t i = count - recent; i < count; ++i) sum += samples[i];
+    const double fps = sum > 0.0 ? double(recent) * 1000.0 / sum : 0.0;
+    double one_low = 0.0;
+    if (count) {
+        std::vector<double> slow(samples.begin(), samples.begin() + count);
+        std::sort(slow.begin(), slow.end(), std::greater<double>());
+        const size_t slow_count = std::max<size_t>(1, (count + 99) / 100);
+        double slow_sum = 0.0;
+        for (size_t i = 0; i < slow_count; ++i) slow_sum += slow[i];
+        if (slow_sum > 0.0) one_low = double(slow_count) * 1000.0 / slow_sum;
+    }
+    const int target_interval = std::max(1, g_game_present_interval.load(std::memory_order_relaxed));
+    const double speed = fps * double(target_interval) / 60.0 * 100.0;
+
+    SetBkMode(dc, TRANSPARENT);
+    HFONT font = CreateFontW(-16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    HGDIOBJ old_font = SelectObject(dc, font);
+    SetTextColor(dc, RGB(235, 242, 253));
+    int y = 9;
+    wchar_t line[96];
+    auto draw_metric = [&](const wchar_t* name, double value, const wchar_t* unit, int precision) {
+        if (precision == 0) swprintf_s(line, L"%s  %.0f%s", name, value, unit);
+        else swprintf_s(line, L"%s  %.1f%s", name, value, unit);
+        RECT text{14, y, client.right - 12, y + 22};
+        DrawTextW(dc, line, -1, &text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        y += 23;
+    };
+    if (show_fps) draw_metric(L"FPS", fps, L"", 1);
+    if (show_low) draw_metric(L"1% low", one_low, L" FPS", 1);
+    if (show_speed) draw_metric(L"Game speed", speed, L"%", 1);
+    SelectObject(dc, old_font);
+    DeleteObject(font);
+
+    if (show_graph) {
+        SetTextColor(dc, RGB(170, 190, 218));
+        RECT graph_title{14, y + 1, client.right - 12, y + 19};
+        DrawTextW(dc, L"Frametime (ms)", -1, &graph_title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        RECT graph{14, y + 23, client.right - 12, client.bottom - 10};
+        HBRUSH graph_brush = CreateSolidBrush(RGB(31, 40, 56));
+        FillRect(dc, &graph, graph_brush);
+        DeleteObject(graph_brush);
+        HPEN grid_pen = CreatePen(PS_SOLID, 1, RGB(62, 74, 95));
+        HGDIOBJ previous_pen = SelectObject(dc, grid_pen);
+        for (int row = 1; row < 4; ++row) {
+            const int gy = graph.top + (graph.bottom - graph.top) * row / 4;
+            MoveToEx(dc, graph.left, gy, nullptr);
+            LineTo(dc, graph.right, gy);
+        }
+        SelectObject(dc, previous_pen);
+        DeleteObject(grid_pen);
+        if (count > 1) {
+            std::vector<POINT> points;
+            points.reserve(count);
+            for (size_t i = 0; i < count; ++i) {
+                const int x = graph.left + int((graph.right - graph.left - 1) * i / (count - 1));
+                const double ms = std::clamp(samples[i], 0.0, 50.0);
+                const int py = graph.bottom - 1 - int((graph.bottom - graph.top - 1) * ms / 50.0);
+                points.push_back({x, py});
+            }
+            HPEN line_pen = CreatePen(PS_SOLID, 2, RGB(89, 190, 255));
+            HGDIOBJ previous = SelectObject(dc, line_pen);
+            Polyline(dc, points.data(), int(points.size()));
+            SelectObject(dc, previous);
+            DeleteObject(line_pen);
+        }
+    }
+    EndPaint(h, &ps);
+}
+
+static LRESULT CALLBACK metrics_wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
+    switch (msg) {
+        case WM_PAINT:
+            metrics_paint(h);
+            return 0;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_NCHITTEST:
+            return HTTRANSPARENT;
+        case WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE;
+    }
+    return DefWindowProcW(h, msg, w, l);
+}
+
+static void metrics_init(HWND owner) {
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = metrics_wndproc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"WonderRecompMetricsOverlay";
+    RegisterClassW(&wc);
+    HWND overlay = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                                   wc.lpszClassName, L"Wonder Metrics", WS_POPUP, 0, 0, 320, 180, owner, nullptr,
+                                   wc.hInstance, nullptr);
+    if (overlay) {
+        SetLayeredWindowAttributes(overlay, RGB(0, 0, 0), 230, LWA_COLORKEY | LWA_ALPHA);
+        g_metrics_window.store(overlay, std::memory_order_release);
+    }
+}
+
+static void metrics_reposition() {
+    HWND overlay = g_metrics_window.load(std::memory_order_acquire);
+    HWND owner = nx::g_window;
+    if (!overlay || !owner) return;
+    if (!metrics_has_content()) {
+        ShowWindow(overlay, SW_HIDE);
+        return;
+    }
+    const bool show_graph = g_metric_frametime_graph.load(std::memory_order_relaxed);
+    const int rows = int(g_metric_fps.load(std::memory_order_relaxed)) +
+                     int(g_metric_one_percent_low.load(std::memory_order_relaxed)) +
+                     int(g_metric_game_speed.load(std::memory_order_relaxed));
+    const int width = 320, height = metrics_overlay_height(show_graph, rows);
+    RECT client{};
+    GetClientRect(owner, &client);
+    POINT origin{0, 0};
+    ClientToScreen(owner, &origin);
+    const int position = g_metrics_position.load(std::memory_order_relaxed);
+    const bool right = position == 1 || position == 3;
+    const bool bottom = position == 2 || position == 3;
+    const int x = origin.x + (right ? std::max(12L, client.right - width - 16) : 16);
+    const int y = origin.y + (bottom ? std::max(12L, client.bottom - height - 16) : 16);
+    SetWindowPos(overlay, HWND_TOP, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(overlay, nullptr, FALSE);
+}
+
 static void apply_pc_menu(const PcMenuState& state, bool persist) {
     const bool size_changed = state.width != g_pc_settings.width || state.height != g_pc_settings.height;
     const bool topmost_changed = state.always_on_top != g_pc_settings.always_on_top;
@@ -207,8 +452,12 @@ static void apply_pc_menu(const PcMenuState& state, bool persist) {
     g_pc_settings.volume = std::clamp(g_pc_settings.volume, 0, 100);
     g_pc_settings.internal_resolution = std::clamp(g_pc_settings.internal_resolution, 0, 4);
     g_pc_settings.language = std::clamp(g_pc_settings.language, 0, 3);
+    g_pc_settings.game_language = std::clamp(g_pc_settings.game_language, 0, 3);
     g_pc_settings.controller_preset = std::clamp(g_pc_settings.controller_preset, 0, 1);
-    g_controller_preset.store(g_pc_settings.controller_preset, std::memory_order_relaxed);
+    g_pc_settings.overlay_position = std::clamp(g_pc_settings.overlay_position, 0, 3);
+    apply_input_bindings(g_pc_settings);
+    nx::set_game_language(g_pc_settings.game_language);
+    apply_metrics_settings(g_pc_settings);
     if (g_fullscreen != g_pc_settings.fullscreen) toggle_fullscreen(g_window);
     else if (size_changed && !g_fullscreen) resize_window_client(g_window, g_pc_settings.width, g_pc_settings.height);
     if (topmost_changed && g_window)
@@ -243,6 +492,57 @@ static void toggle_fullscreen(HWND h) {
 
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
     switch (msg) {
+        case WM_MOVE:
+        case WM_SIZE:
+            metrics_reposition();
+            break;
+        case WM_PAINT: {
+            if (!g_shader_progress_visible.load(std::memory_order_acquire))
+                return DefWindowProcW(h, msg, w, l);
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(h, &ps);
+            RECT client{};
+            GetClientRect(h, &client);
+            HBRUSH background = CreateSolidBrush(RGB(17, 22, 32));
+            FillRect(dc, &client, background);
+            DeleteObject(background);
+            const int width = int(std::max(1L, client.right - client.left));
+            const int height = int(std::max(1L, client.bottom - client.top));
+            const int left = std::max(32, width / 8);
+            const int right = width - left;
+            const int center_y = height / 2;
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(245, 247, 250));
+            HFONT font = CreateFontW(-MulDiv(22, GetDeviceCaps(dc, LOGPIXELSY), 72), 0, 0, 0, FW_SEMIBOLD,
+                                     FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                     CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            HGDIOBJ old_font = SelectObject(dc, font);
+            RECT title{left, center_y - 62, right, center_y - 25};
+            DrawTextW(dc, L"Compiling shaders", -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            wchar_t count[96];
+            const uint64_t compiled = g_shader_compiled.load(std::memory_order_relaxed);
+            const uint64_t total = g_shader_total.load(std::memory_order_relaxed);
+            swprintf_s(count, L"%llu / %llu compiled", (unsigned long long)compiled, (unsigned long long)total);
+            SetTextColor(dc, RGB(188, 198, 214));
+            RECT label{left, center_y - 15, right, center_y + 15};
+            DrawTextW(dc, count, -1, &label, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            SelectObject(dc, old_font);
+            DeleteObject(font);
+
+            RECT bar{left, center_y + 30, right, center_y + 43};
+            HBRUSH track = CreateSolidBrush(RGB(49, 59, 74));
+            FillRect(dc, &bar, track);
+            DeleteObject(track);
+            if (total) {
+                const uint64_t bounded = std::min(compiled, total);
+                bar.right = bar.left + int64_t(bar.right - bar.left) * bounded / total;
+                HBRUSH fill = CreateSolidBrush(RGB(54, 139, 235));
+                FillRect(dc, &bar, fill);
+                DeleteObject(fill);
+            }
+            EndPaint(h, &ps);
+            return 0;
+        }
         case WM_CLOSE:
             log("window closed");
             ExitProcess(0);
@@ -299,6 +599,8 @@ static void window_thread(std::atomic<bool>* ready) {
     if (g_pc_settings.always_on_top)
         SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     pc_menu_init(g_window, g_pc_settings, apply_pc_menu);
+    metrics_init(g_window);
+    apply_metrics_settings(g_pc_settings);
     if (!headless()) SetForegroundWindow(g_window);
     *ready = true;
     MSG m;
@@ -319,6 +621,35 @@ void* create_window() {
 
 bool window_minimized() { return g_window && IsIconic(g_window); }
 
+void shader_compile_progress(uint64_t compiled, uint64_t total, bool visible) {
+    g_shader_compiled.store(compiled, std::memory_order_relaxed);
+    g_shader_total.store(total, std::memory_order_relaxed);
+    g_shader_progress_visible.store(visible, std::memory_order_release);
+    if (g_window) InvalidateRect(g_window, nullptr, TRUE);
+}
+
+void overlay_game_interval(int interval) {
+    g_game_present_interval.store(std::max(1, interval), std::memory_order_relaxed);
+}
+
+void overlay_presented(uint64_t now_ns) {
+    {
+        std::lock_guard lock(g_metrics_mutex);
+        if (g_previous_present_ns && now_ns > g_previous_present_ns) {
+            const double interval_ms = double(now_ns - g_previous_present_ns) / 1e6;
+            if (interval_ms > 0.0 && interval_ms < 10000.0) {
+                g_frame_intervals_ms[g_frame_interval_next] = interval_ms;
+                g_frame_interval_next = (g_frame_interval_next + 1) % kFrameHistory;
+                g_frame_interval_count = std::min(kFrameHistory, g_frame_interval_count + 1);
+            }
+        }
+        g_previous_present_ns = now_ns;
+    }
+    if (metrics_has_content()) {
+        if (HWND overlay = g_metrics_window.load(std::memory_order_acquire)) InvalidateRect(overlay, nullptr, FALSE);
+    }
+}
+
 void window_size(uint32_t& w, uint32_t& h) {
     RECT r{};
     if (g_window) GetClientRect(g_window, &r);
@@ -328,9 +659,12 @@ void window_size(uint32_t& w, uint32_t& h) {
 
 void screen_size(uint32_t& w, uint32_t& h) { window_size(w, h); }
 
-// ---- input: XInput pad 0 + keyboard ---------------------------------------------------------------------------
+// ---- input: XInput / SDL gamepad + per-action keyboard bindings -----------------------------------------------
 
-static bool key(int vk) { return g_window && GetForegroundWindow() == g_window && (GetAsyncKeyState(vk) & 0x8000); }
+static bool key(int vk) {
+    return vk > 0 && g_window && GetForegroundWindow() == g_window && (GetAsyncKeyState(vk) & 0x8000);
+}
+static std::array<bool, kPcControlCount> g_previous_controller_state{};
 
 bool headless() {  // NX_HEADLESS (platform.h)
     static const bool on = std::getenv("NX_HEADLESS") != nullptr;
@@ -338,39 +672,27 @@ bool headless() {  // NX_HEADLESS (platform.h)
 }
 
 void read_pad(PadState& p) {
-    if (pc_menu_open()) {
-        p = {};
-        input_script(p);
-        return;
-    }
+    std::array<bool, kPcControlCount> physical{};
     XINPUT_STATE xs{};
     bool have_xinput = XInputGetState(0, &xs) == ERROR_SUCCESS;
-    const bool nintendo_layout = g_controller_preset.load(std::memory_order_relaxed) == 1;
     if (have_xinput) {
         const auto& g = xs.Gamepad;
-        if (nintendo_layout) {
-            if (g.wButtons & XINPUT_GAMEPAD_B) p.buttons |= kA;
-            if (g.wButtons & XINPUT_GAMEPAD_A) p.buttons |= kB;
-            if (g.wButtons & XINPUT_GAMEPAD_Y) p.buttons |= kX;
-            if (g.wButtons & XINPUT_GAMEPAD_X) p.buttons |= kY;
-        } else {
-            if (g.wButtons & XINPUT_GAMEPAD_A) p.buttons |= kA;
-            if (g.wButtons & XINPUT_GAMEPAD_B) p.buttons |= kB;
-            if (g.wButtons & XINPUT_GAMEPAD_X) p.buttons |= kX;
-            if (g.wButtons & XINPUT_GAMEPAD_Y) p.buttons |= kY;
-        }
-        if (g.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) p.buttons |= kL;
-        if (g.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) p.buttons |= kR;
-        if (g.bLeftTrigger > 100) p.buttons |= kZL;
-        if (g.bRightTrigger > 100) p.buttons |= kZR;
-        if (g.wButtons & XINPUT_GAMEPAD_START) p.buttons |= kPlus;
-        if (g.wButtons & XINPUT_GAMEPAD_BACK) p.buttons |= kMinus;
-        if (g.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) p.buttons |= kStickL;
-        if (g.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB) p.buttons |= kStickR;
-        if (g.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) p.buttons |= kLeft;
-        if (g.wButtons & XINPUT_GAMEPAD_DPAD_UP) p.buttons |= kUp;
-        if (g.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) p.buttons |= kRight;
-        if (g.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) p.buttons |= kDown;
+        physical[PcSouth] = (g.wButtons & XINPUT_GAMEPAD_A) != 0;
+        physical[PcEast] = (g.wButtons & XINPUT_GAMEPAD_B) != 0;
+        physical[PcWest] = (g.wButtons & XINPUT_GAMEPAD_X) != 0;
+        physical[PcNorth] = (g.wButtons & XINPUT_GAMEPAD_Y) != 0;
+        physical[PcShoulderL] = (g.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+        physical[PcShoulderR] = (g.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
+        physical[PcTriggerL] = g.bLeftTrigger > 100;
+        physical[PcTriggerR] = g.bRightTrigger > 100;
+        physical[PcStart] = (g.wButtons & XINPUT_GAMEPAD_START) != 0;
+        physical[PcBack] = (g.wButtons & XINPUT_GAMEPAD_BACK) != 0;
+        physical[PcStickL] = (g.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
+        physical[PcStickR] = (g.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0;
+        physical[PcLeft] = (g.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
+        physical[PcUp] = (g.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0;
+        physical[PcRight] = (g.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
+        physical[PcDown] = (g.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
         auto dz = [](int v) { return (v > -7849 && v < 7849) ? 0 : std::max(-kStickMax, std::min(kStickMax, v)); };
         p.lx = dz(g.sThumbLX);
         p.ly = dz(g.sThumbLY);
@@ -405,29 +727,22 @@ void read_pad(PadState& p) {
         }
         if (gamepad) {
             auto down = [](SDL_Gamepad* pad, SDL_GamepadButton b) { return SDL_GetGamepadButton(pad, b); };
-            if (nintendo_layout) {
-                if (down(gamepad, SDL_GAMEPAD_BUTTON_EAST)) p.buttons |= kA;
-                if (down(gamepad, SDL_GAMEPAD_BUTTON_SOUTH)) p.buttons |= kB;
-                if (down(gamepad, SDL_GAMEPAD_BUTTON_NORTH)) p.buttons |= kX;
-                if (down(gamepad, SDL_GAMEPAD_BUTTON_WEST)) p.buttons |= kY;
-            } else {
-                if (down(gamepad, SDL_GAMEPAD_BUTTON_SOUTH)) p.buttons |= kA;
-                if (down(gamepad, SDL_GAMEPAD_BUTTON_EAST)) p.buttons |= kB;
-                if (down(gamepad, SDL_GAMEPAD_BUTTON_WEST)) p.buttons |= kX;
-                if (down(gamepad, SDL_GAMEPAD_BUTTON_NORTH)) p.buttons |= kY;
-            }
-            if (down(gamepad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) p.buttons |= kL;
-            if (down(gamepad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) p.buttons |= kR;
-            if (SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 10000) p.buttons |= kZL;
-            if (SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 10000) p.buttons |= kZR;
-            if (down(gamepad, SDL_GAMEPAD_BUTTON_START)) p.buttons |= kPlus;
-            if (down(gamepad, SDL_GAMEPAD_BUTTON_BACK)) p.buttons |= kMinus;
-            if (down(gamepad, SDL_GAMEPAD_BUTTON_LEFT_STICK)) p.buttons |= kStickL;
-            if (down(gamepad, SDL_GAMEPAD_BUTTON_RIGHT_STICK)) p.buttons |= kStickR;
-            if (down(gamepad, SDL_GAMEPAD_BUTTON_DPAD_LEFT)) p.buttons |= kLeft;
-            if (down(gamepad, SDL_GAMEPAD_BUTTON_DPAD_UP)) p.buttons |= kUp;
-            if (down(gamepad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) p.buttons |= kRight;
-            if (down(gamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) p.buttons |= kDown;
+            physical[PcSouth] = down(gamepad, SDL_GAMEPAD_BUTTON_SOUTH);
+            physical[PcEast] = down(gamepad, SDL_GAMEPAD_BUTTON_EAST);
+            physical[PcWest] = down(gamepad, SDL_GAMEPAD_BUTTON_WEST);
+            physical[PcNorth] = down(gamepad, SDL_GAMEPAD_BUTTON_NORTH);
+            physical[PcShoulderL] = down(gamepad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+            physical[PcShoulderR] = down(gamepad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+            physical[PcTriggerL] = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 10000;
+            physical[PcTriggerR] = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 10000;
+            physical[PcStart] = down(gamepad, SDL_GAMEPAD_BUTTON_START);
+            physical[PcBack] = down(gamepad, SDL_GAMEPAD_BUTTON_BACK);
+            physical[PcStickL] = down(gamepad, SDL_GAMEPAD_BUTTON_LEFT_STICK);
+            physical[PcStickR] = down(gamepad, SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+            physical[PcLeft] = down(gamepad, SDL_GAMEPAD_BUTTON_DPAD_LEFT);
+            physical[PcUp] = down(gamepad, SDL_GAMEPAD_BUTTON_DPAD_UP);
+            physical[PcRight] = down(gamepad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
+            physical[PcDown] = down(gamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN);
             auto dz = [](int v) { return (v > -7849 && v < 7849) ? 0 : std::max(-kStickMax, std::min(kStickMax, v)); };
             p.lx = dz(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX));
             p.ly = dz(-SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY));
@@ -435,21 +750,33 @@ void read_pad(PadState& p) {
             p.ry = dz(-SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY));
         }
     }
-    // Keyboard: WASD / arrows move, Space A, Shift B (dash), J X, K Y, Q/E L/R, Z/C ZL/ZR, Enter +, Esc -.
-    if (key('A') || key(VK_LEFT)) p.lx = -kStickMax;
-    if (key('D') || key(VK_RIGHT)) p.lx = kStickMax;
-    if (key('W') || key(VK_UP)) p.ly = kStickMax;
-    if (key('S') || key(VK_DOWN)) p.ly = -kStickMax;
-    if (key(VK_SPACE)) p.buttons |= kA;
-    if (key(VK_SHIFT)) p.buttons |= kB;
-    if (key('J')) p.buttons |= kX;
-    if (key('K')) p.buttons |= kY;
-    if (key('Q')) p.buttons |= kL;
-    if (key('E')) p.buttons |= kR;
-    if (key('Z')) p.buttons |= kZL;
-    if (key('C')) p.buttons |= kZR;
-    if (key(VK_RETURN)) p.buttons |= kPlus;
-    if (key(VK_ESCAPE)) p.buttons |= kMinus;
+
+    const bool menu_open = pc_menu_open();
+    if (menu_open) {
+        for (size_t i = 0; i < physical.size(); ++i)
+            if (physical[i] && !g_previous_controller_state[i]) pc_menu_capture_controller_button(int(i));
+    } else {
+        for (size_t action = 0; action < kPcControlCount; ++action) {
+            const int source = g_controller_bindings[action].load(std::memory_order_relaxed);
+            if (source >= 0 && source < int(physical.size()) && physical[size_t(source)])
+                p.buttons |= kPadActionBits[action];
+            const int vk = g_keyboard_bindings[action].load(std::memory_order_relaxed);
+            if (key(vk)) {
+                p.buttons |= kPadActionBits[action];
+                if (action == PcDpadLeft) p.lx = -kStickMax;
+                else if (action == PcDpadRight) p.lx = kStickMax;
+                else if (action == PcDpadUp) p.ly = kStickMax;
+                else if (action == PcDpadDown) p.ly = -kStickMax;
+            }
+        }
+        // WASD remains a convenient independent movement option in addition to remappable D-pad keys.
+        if (key('A')) p.lx = -kStickMax;
+        if (key('D')) p.lx = kStickMax;
+        if (key('W')) p.ly = kStickMax;
+        if (key('S')) p.ly = -kStickMax;
+    }
+    g_previous_controller_state = physical;
+    if (menu_open) p = {};
     input_script(p);  // NX_INPUT_SCRIPT (input_script.cpp): unattended runs
 }
 

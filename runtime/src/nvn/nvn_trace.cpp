@@ -18,6 +18,7 @@
 #include <string>
 
 #include "nvn.h"
+#include "kernel.h"
 #include "platform.h"
 
 namespace nx {
@@ -29,6 +30,7 @@ constexpr uint32_t kFullCalls = 32;  // calls of one proc traced with their argu
 std::mutex g_lock;
 FILE* g_trace_file = nullptr;
 std::map<std::string, uint64_t> g_calls;  // proc -> calls
+std::map<std::string, bool> g_resolution_builder_seen;
 std::atomic<uint64_t> g_seq{0};
 
 std::string guest_str(uint64_t addr) {
@@ -76,6 +78,57 @@ void trace_stub(CPU& c) {
     c.x[0] = std::strstr(name, "Initialize") ? 1 : 0;
 }
 
+// Trace the title-side texture size setters when locating a game's native render-resolution controls.
+// These NVN procs normally go straight into the SDK driver, so the ordinary call trace cannot show
+// their guest callsites. Keep this opt-in and limit it to large 16:9 / shadow-sized images.
+void trace_texture_builder_size(CPU& c) {
+    const char* proc = hle_current_name();
+    const uint64_t builder = c.x[0];
+    const uint64_t args[] = {c.x[0], c.x[1], c.x[2], c.x[3]};
+    const uint64_t caller = c.x[30];
+    const uint64_t real = nvn::real_proc(c, proc);
+    if (!real) {
+        log("resolution builder: driver proc %s is unavailable", proc);
+        c.x[0] = 0;
+        return;
+    }
+    switch (std::strstr(proc, "SetSize1D") ? 1 : std::strstr(proc, "SetSize2D") ? 2 :
+            std::strstr(proc, "SetSize3D") ? 3 : std::strstr(proc, "SetWidth") ||
+            std::strstr(proc, "SetHeight") ? 1 : 0) {
+        case 1: nvn::guest_call(c, real, {args[0], args[1]}); break;
+        case 2: nvn::guest_call(c, real, {args[0], args[1], args[2]}); break;
+        case 3: nvn::guest_call(c, real, {args[0], args[1], args[2], args[3]}); break;
+        default: c.x[0] = 0; return;
+    }
+
+    static const bool enabled = std::getenv("NX_TRACE_RESOLUTION_BUILDERS") != nullptr;
+    if (!enabled) return;
+    const uint32_t width = uint32_t(nvn::driver(c, "nvnTextureBuilderGetWidth", {builder}));
+    const uint32_t height = uint32_t(nvn::driver(c, "nvnTextureBuilderGetHeight", {builder}));
+    if (width < 960 || height < 540) return;
+    const uint64_t flags = nvn::driver(c, "nvnTextureBuilderGetFlags", {builder});
+    const uint64_t target = nvn::driver(c, "nvnTextureBuilderGetTarget", {builder});
+    const uint64_t format = nvn::driver(c, "nvnTextureBuilderGetFormat", {builder});
+    const bool wide = uint64_t(width) * 9 >= uint64_t(height) * 16 - 16 &&
+                      uint64_t(width) * 9 <= uint64_t(height) * 16 + 16;
+    const bool square = width == height && width >= 1024;
+    if ((!wide && !square) || target != 1) return;
+
+    char key[128];
+    std::snprintf(key, sizeof key, "%s:%llx:%u:%u:%llx:%llx", proc, (unsigned long long)caller,
+                  width, height, (unsigned long long)flags, (unsigned long long)format);
+    {
+        std::lock_guard lk(g_lock);
+        if (g_resolution_builder_seen[key]) return;
+        g_resolution_builder_seen[key] = true;
+    }
+
+    log("resolution builder: %s %llx -> %ux%u flags %#llx target %llu format %#llx lr %s",
+        proc, (unsigned long long)builder, width, height, (unsigned long long)flags,
+        (unsigned long long)target, (unsigned long long)format, describe(caller).c_str());
+    nx::backtrace(c);
+}
+
 // Builders, state objects and texture views only store and return fields: the driver's own code serves them.
 bool driver_serves(const std::string& name) {
     static const std::regex pure(
@@ -88,6 +141,11 @@ uint64_t proc_address(CPU& c, const std::string& name) {
     if (name.empty()) return 0;
     static const bool note_all = std::getenv("NX_NVN_REAL") != nullptr;  // record every proc's driver address
     if (note_all) nvn::real_proc(c, name.c_str());
+    if (std::getenv("NX_TRACE_RESOLUTION_BUILDERS") &&
+        (name == "nvnTextureBuilderSetWidth" || name == "nvnTextureBuilderSetHeight" ||
+         name == "nvnTextureBuilderSetSize1D" || name == "nvnTextureBuilderSetSize2D" ||
+         name == "nvnTextureBuilderSetSize3D"))
+        return hle_address(name.c_str());
     if (hle_lookup(name.c_str())) return hle_address(name.c_str());
     if (driver_serves(name))
         if (uint64_t real = nvn::real_proc(c, name.c_str())) return real;
@@ -116,6 +174,11 @@ void nvn_device_get_proc_address(CPU& c) {
 
 NX_HLE("nvnBootstrapLoader", nvn_bootstrap_loader);
 NX_HLE("nvnDeviceGetProcAddress", nvn_device_get_proc_address);
+NX_HLE("nvnTextureBuilderSetWidth", trace_texture_builder_size);
+NX_HLE("nvnTextureBuilderSetHeight", trace_texture_builder_size);
+NX_HLE("nvnTextureBuilderSetSize1D", trace_texture_builder_size);
+NX_HLE("nvnTextureBuilderSetSize2D", trace_texture_builder_size);
+NX_HLE("nvnTextureBuilderSetSize3D", trace_texture_builder_size);
 
 namespace nvn {
 

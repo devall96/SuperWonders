@@ -389,6 +389,13 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     key.color = g_state.color, key.mask = g_state.mask, key.depth = g_state.depth, key.polygon = g_state.polygon;
     key.color_count = t.color_count, key.depth_clamp = g_state.depth_clamp;
     key.alpha_to_coverage = g_state.alpha_to_coverage;
+    // NX_SHADOW_COORD_DEBUG substitutes the receiver FS; make its false-colour output visible regardless of the
+    // game's material blend and channel-mask state so the diagnostic cannot silently look like the normal frame.
+    if (shadow_coord_debug_on() && fs && fs->hash == "1872caa47df3cd7a") {
+        std::memset(key.color.blend_enable, 0, sizeof key.color.blend_enable);
+        std::memset(key.mask.mask, 0x0F, sizeof key.mask.mask);
+        key.alpha_to_coverage = 0;
+    }
     for (uint32_t k = 0; k < t.color_count; k++) {
         GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
         key.color_formats[k] = img ? view_format(*img, t.views.format[k]) : unused_slot_format();

@@ -29,11 +29,12 @@ struct GpuImage {
     VkComponentMapping swizzle{};  // for sampling (attachment views stay identity)
     bool storage = false;          // created with VK_IMAGE_USAGE_STORAGE_BIT (compute shaders write it)
     bool mutable_format = true;
-    uint64_t rendered_at = 0;      // the pass-end serial of the last pass that rendered into it (nvn_draw.cpp, G4)    // views may use another format (MUTABLE_FORMAT; nvn_image.cpp, ubwc_flags)
+    uint64_t rendered_at = 0;      // the pass-end serial of the last pass that rendered into it (nvn_draw.cpp, G4)
     // An R8 texture always read as (1, 1, 1, R) (a glyph cache): stored as RGBA8 (255, 255, 255, R) and sampled
     // without swizzle. MoltenVK returned alpha 0 for that view swizzle on a 2D-array view, so all text was invisible.
     bool alpha_from_r = false;
     uint32_t nvn_format = 0;  // the texture's NVN format
+    uint64_t pool = 0, pool_offset = 0, pool_size = 0;  // guest NVN texture storage range (alias diagnostics)
 };
 
 VkDevice vk_device();
@@ -47,6 +48,7 @@ uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags want);
 
 // The image behind an NVN texture (guest NVNtexture*), made on first use.
 GpuImage* image_of(uint64_t texture);
+GpuImage* latest_overlapping_shadow_image(uint64_t texture, GpuImage* image);
 // NX_1D_IMAGES=1 (bisecting, nvn_pipeline.cpp): NVN 1D and 1D-array textures as Vulkan 1D images, the old way. By
 // default they are 2D / 2D-array images of height 1, which the translated shaders (1D sampled as 2D) can view (G8).
 bool vk_1d_images();

@@ -292,6 +292,185 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             fs ? fs->hash.c_str() : "-", indexed ? "indexed" : "arrays", count, instances);
     trace_cube_draw(t, vs, fs, tex_bindings, handles);
     frame_sig_draw(t, indexed, count, instances, fs, tex_bindings, handles);
+    // NX_TRACE_SHADOW_AUX=1: inspect the screen-space auxiliary shadow shader's
+    // c3[18] coordinate transform and its fp_t_tcb_20 binding. This is diagnostic
+    // only: it does not change shader inputs or rendering state.
+    static const bool trace_shadow_aux = std::getenv("NX_TRACE_SHADOW_AUX") != nullptr;
+    static unsigned shadow_aux_logs = 0;
+    static std::map<std::pair<uint64_t, uint64_t>, std::string> shadow_aux_writers;
+    if (trace_shadow_aux) {
+        for (uint32_t k = 0; k < t.color_count && k < 8; ++k) {
+            Texture* target_texture = t.colors[k] ? get<Texture>(t.colors[k]) : nullptr;
+            GpuImage* target_image = t.colors[k] ? image_of(t.colors[k]) : nullptr;
+            if (!target_texture || !target_image || !(target_texture->flags & 0x8) ||
+                target_texture->width > 512 || target_texture->height > 288 ||
+                uint64_t(target_texture->width) * 9 + 16 < uint64_t(target_texture->height) * 16 ||
+                uint64_t(target_texture->width) * 9 > uint64_t(target_texture->height) * 16 + 16)
+                continue;
+            char writer[256];
+            std::snprintf(writer, sizeof writer, "frame %llu draw %llu %ux%u -> %ux%u scale %.3f",
+                          (unsigned long long)g_frame.load(), (unsigned long long)g_stats.done,
+                          target_texture->width, target_texture->height, target_image->width, target_image->height,
+                          target_image->render_scale);
+            shadow_aux_writers[{target_texture->pool, target_texture->offset}] = writer;
+        }
+    }
+    if (trace_shadow_aux && vs && fs && vs->hash == "f11da12dbf3ab8e2" &&
+        fs->hash == "1872caa47df3cd7a" && shadow_aux_logs < 128) {
+        shadow_aux_logs++;
+        const Range& u = g_state.uniforms[1][0];
+        if (u.address && u.size >= 19 * 16)
+            if (const auto* f = reinterpret_cast<const float*>(guest_bytes(u.address)))
+                log("shadow-aux frame %llu draw %llu target-scale %.3f fs-c3[18] @%llx: %g %g %g %g",
+                    (unsigned long long)g_frame.load(), (unsigned long long)g_stats.done,
+                    t.color_count && t.colors[0] && image_of(t.colors[0]) ? image_of(t.colors[0])->render_scale : 1.0f,
+                    (unsigned long long)u.address, f[72], f[73], f[74], f[75]);
+        for (size_t j = 0; j < tex_bindings.size() && j < handles.size(); j++) {
+            const DescriptorBinding* binding = tex_bindings[j].second;
+            if (!binding || binding->name != "fp_t_tcb_20") continue;
+            uint64_t texture = 0;
+            SamplerInfo sampler;
+            ViewInfo view;
+            texture_for(handles[j], texture, sampler, &view);
+            Texture* tx = texture ? get<Texture>(texture) : nullptr;
+            GpuImage* image = texture ? image_of(texture) : nullptr;
+            const auto writer = tx ? shadow_aux_writers.find({tx->pool, tx->offset}) : shadow_aux_writers.end();
+            log("shadow-aux input frame %llu draw %llu slot %u texture %llx pool %llx offset %llx guest %ux%u "
+                "host %ux%u scale %.3f last-writer {%s}",
+                (unsigned long long)g_frame.load(), (unsigned long long)g_stats.done, binding->binding,
+                (unsigned long long)texture, (unsigned long long)(tx ? tx->pool : 0),
+                (unsigned long long)(tx ? tx->offset : 0), tx ? tx->width : 0, tx ? tx->height : 0,
+                image ? image->width : 0, image ? image->height : 0, image ? image->render_scale : 1.0f,
+                writer != shadow_aux_writers.end() ? writer->second.c_str() : "not seen as a small color target");
+        }
+    }
+    // NX_TRACE_SHADOWS=1: log each distinct draw that samples a depth-compare texture. This is useful for
+    // correlating shadow sampling with the internally scaled render target, without dumping every draw every frame.
+    static const bool trace_shadows = std::getenv("NX_TRACE_SHADOWS") != nullptr;
+    static std::set<std::string> shadow_seen;
+    static std::set<std::string> shadow_inputs_seen;
+    static unsigned shadow_logs = 0;
+    static unsigned shadow_input_logs = 0;
+    if (trace_shadows && vs && fs && shadow_logs < 512) {
+        GpuImage* target = t.color_count && t.colors[0] ? image_of(t.colors[0]) : nullptr;
+        GpuImage* depth = t.depth ? image_of(t.depth) : nullptr;
+        for (size_t k = 0; k < tex_bindings.size() && k < handles.size() && shadow_logs < 512; k++) {
+            const DescriptorBinding* binding = tex_bindings[k].second;
+            if (!binding || !binding->image.depth) continue;
+            uint64_t texture = 0;
+            SamplerInfo sampler;
+            ViewInfo view;
+            texture_for(handles[k], texture, sampler, &view);
+            Texture* tx = texture ? get<Texture>(texture) : nullptr;
+            GpuImage* image = texture ? image_of(texture) : nullptr;
+            char key[320];
+            std::snprintf(key, sizeof key, "%.16s:%.16s:%u:%llx:%llx:%llx:%ux%u:%.3f:%u:%u:%d:%d:%d:%d:%u:%u",
+                          vs->hash.c_str(), fs->hash.c_str(), binding->binding, (unsigned long long)texture,
+                          (unsigned long long)(t.color_count ? t.colors[0] : 0), (unsigned long long)t.depth,
+                          target ? target->width : 0, target ? target->height : 0, target ? target->render_scale : 1.0f,
+                          depth ? depth->width : 0, depth ? depth->height : 0, g_state.viewport[0], g_state.viewport[1],
+                          g_state.viewport[2], g_state.viewport[3], sampler.compare_mode, sampler.compare_func);
+            if (!shadow_seen.insert(key).second) continue;
+            shadow_logs++;
+            log("shadow-trace frame %llu draw %llu vs %s fs %s slot %u texture %llx memory %llx pool %llx offset %llx size %llu "
+                "guest %ux%u format %#x flags %#x "
+                "image %ux%u scale %.3f view %u+%u layers %u+%u sampler compare %u/%u filter %u/%u lod %g..%g "
+                "target %llx format %#x guest %ux%u host %ux%u scale %.3f depth %llx format %#x %ux%u scale %.3f "
+                "viewport %d,%d %dx%d depth-state test/write/func %u/%u/%u bias %g/%g/%g",
+                (unsigned long long)g_frame.load(), (unsigned long long)g_stats.done, vs->hash.c_str(), fs->hash.c_str(),
+                binding->binding,
+                (unsigned long long)texture, (unsigned long long)(tx ? tx->memory : 0),
+                (unsigned long long)(tx ? tx->pool : 0), (unsigned long long)(tx ? tx->offset : 0),
+                (unsigned long long)(tx ? tx->storage_size : 0), tx ? tx->width : 0, tx ? tx->height : 0,
+                tx ? tx->format : 0, tx ? tx->flags : 0, image ? image->width : 0,
+                image ? image->height : 0, image ? image->render_scale : 1.0f, view.base_level, view.levels,
+                view.min_layer, view.layers, sampler.compare_mode, sampler.compare_func, sampler.min_filter,
+                sampler.mag_filter, sampler.lod_min, sampler.lod_max, (unsigned long long)(t.color_count ? t.colors[0] : 0),
+                target ? target->nvn_format : 0, target ? target->logical_width : 0, target ? target->logical_height : 0,
+                target ? target->width : 0, target ? target->height : 0, target ? target->render_scale : 1.0f,
+                (unsigned long long)t.depth, depth ? depth->nvn_format : 0, depth ? depth->width : 0,
+                depth ? depth->height : 0, depth ? depth->render_scale : 1.0f, g_state.viewport[0], g_state.viewport[1],
+                g_state.viewport[2], g_state.viewport[3], g_state.depth.depth_test, g_state.depth.depth_write,
+                g_state.depth.depth_func, g_state.bias_factor, g_state.bias_units, g_state.bias_clamp);
+            // Include the other sampled images used by a shadow-receiving pass: screen-space data can be scaled
+            // independently of the depth map, and a mismatched auxiliary texture can displace/flicker shadows.
+            for (size_t j = 0; j < tex_bindings.size() && j < handles.size() && shadow_input_logs < 4096; j++) {
+                const auto [input_shader, input_binding] = tex_bindings[j];
+                if (!input_shader || !input_binding || input_binding->set != 2 ||
+                    (input_binding->type != DescriptorType::CombinedImageSampler &&
+                     input_binding->type != DescriptorType::SampledImage))
+                    continue;
+                uint64_t input_texture = 0;
+                SamplerInfo input_sampler;
+                ViewInfo input_view;
+                texture_for(handles[j], input_texture, input_sampler, &input_view);
+                Texture* input_tx = input_texture ? get<Texture>(input_texture) : nullptr;
+                GpuImage* input_image = input_texture ? image_of(input_texture) : nullptr;
+                char input_key[384];
+                std::snprintf(input_key, sizeof input_key, "%.16s:%.16s:%u:%llx:%llx:%ux%u:%u:%u:%.3f:%ux%u:%.3f",
+                              vs->hash.c_str(), fs->hash.c_str(), input_binding->binding,
+                              (unsigned long long)input_texture,
+                              (unsigned long long)(input_tx ? input_tx->memory : 0),
+                              input_tx ? input_tx->width : 0, input_tx ? input_tx->height : 0,
+                              input_tx ? input_tx->format : 0, input_tx ? input_tx->flags : 0,
+                              input_image ? input_image->render_scale : 1.0f, target ? target->width : 0,
+                              target ? target->height : 0, target ? target->render_scale : 1.0f);
+                if (!shadow_inputs_seen.insert(input_key).second) continue;
+                shadow_input_logs++;
+                log("shadow-input frame %llu draw %llu vs %s fs %s stage %s slot %u name %s texture %llx memory %llx "
+                    "pool %llx offset %llx size %llu guest %ux%u format %#x flags %#x image %ux%u scale %.3f "
+                    "depth %u target-scale %.3f",
+                    (unsigned long long)g_frame.load(), (unsigned long long)g_stats.done, vs->hash.c_str(),
+                    fs->hash.c_str(), stage_name(input_shader->stage), input_binding->binding,
+                    input_binding->name.c_str(), (unsigned long long)input_texture,
+                    (unsigned long long)(input_tx ? input_tx->memory : 0),
+                    (unsigned long long)(input_tx ? input_tx->pool : 0),
+                    (unsigned long long)(input_tx ? input_tx->offset : 0),
+                    (unsigned long long)(input_tx ? input_tx->storage_size : 0),
+                    input_tx ? input_tx->width : 0, input_tx ? input_tx->height : 0, input_tx ? input_tx->format : 0,
+                    input_tx ? input_tx->flags : 0, input_image ? input_image->width : 0,
+                    input_image ? input_image->height : 0, input_image ? input_image->render_scale : 1.0f,
+                    input_binding->image.depth, target ? target->render_scale : 1.0f);
+            }
+        }
+    }
+    // NX_TRACE_SHADOW_WRITES=1: inspect the depth-only square targets that produce shadow maps.
+    // Receiver traces alone cannot expose a bad viewport or scale while the maps are rendered.
+    static const bool trace_shadow_writes = std::getenv("NX_TRACE_SHADOW_WRITES") != nullptr;
+    static std::set<std::string> shadow_write_seen;
+    static unsigned shadow_write_logs = 0;
+    if (trace_shadow_writes && t.depth && shadow_write_logs < 256) {
+        GpuImage* depth = image_of(t.depth);
+        Texture* depth_texture = get<Texture>(t.depth);
+        if (depth && depth->logical_width >= 256 && depth->logical_height >= 256 &&
+            uint64_t(std::max(depth->logical_width, depth->logical_height)) * 10 <=
+                uint64_t(std::min(depth->logical_width, depth->logical_height)) * 11) {
+            char key[256];
+            std::snprintf(key, sizeof key, "%llx:%ux%u:%d:%d:%d:%d:%u:%u:%u:%g:%g:%g",
+                          (unsigned long long)(depth_texture ? depth_texture->memory : 0),
+                          depth->logical_width, depth->logical_height, g_state.viewport[0], g_state.viewport[1],
+                          g_state.viewport[2], g_state.viewport[3], g_state.depth.depth_test,
+                          g_state.depth.depth_write, g_state.depth.depth_func, g_state.bias_factor,
+                          g_state.bias_units, g_state.bias_clamp);
+            if (shadow_write_seen.insert(key).second) {
+                shadow_write_logs++;
+                log("shadow-write frame %llu draw %llu vs %s fs %s depth %llx guest-memory %llx pool %llx offset %llx "
+                    "size %llu gpu-memory %llx format %#x guest %ux%u host %ux%u scale %.3f viewport %d,%d %dx%d "
+                    "depth-state test/write/func %u/%u/%u bias %g/%g/%g",
+                    (unsigned long long)g_frame.load(), (unsigned long long)g_stats.done,
+                    vs ? vs->hash.c_str() : "-", fs ? fs->hash.c_str() : "-", (unsigned long long)t.depth,
+                    (unsigned long long)(depth_texture ? depth_texture->memory : 0),
+                    (unsigned long long)(depth_texture ? depth_texture->pool : 0),
+                    (unsigned long long)(depth_texture ? depth_texture->offset : 0),
+                    (unsigned long long)(depth_texture ? depth_texture->storage_size : 0),
+                    (unsigned long long)depth->memory, depth->nvn_format, depth->logical_width,
+                    depth->logical_height, depth->width, depth->height, depth->render_scale, g_state.viewport[0],
+                    g_state.viewport[1], g_state.viewport[2], g_state.viewport[3], g_state.depth.depth_test,
+                    g_state.depth.depth_write, g_state.depth.depth_func, g_state.bias_factor, g_state.bias_units,
+                    g_state.bias_clamp);
+            }
+        }
+    }
     // NX_TRACE_DRAWS=<first draw>: logs 80 draws from there.
     static const char* trace_env = std::getenv("NX_TRACE_DRAWS");
     static const uint64_t trace_from = trace_env ? std::strtoull(trace_env, nullptr, 10) : 0;
@@ -349,6 +528,14 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
                 if (auto* f = reinterpret_cast<const float*>(guest_bytes(u.address)))
                     for (int row = 0; row < std::min<int>(int(u.size / 16), 24); row++)
                         log("  vs c3[%d]: %g %g %g %g", row, f[4 * row], f[4 * row + 1], f[4 * row + 2], f[4 * row + 3]);
+        // NX_TRACE_VS_SHADOW=1: c3 rows 43..45 generate VS output location 11,
+        // consumed by the shadow receiver fragment shader for its Dref coordinates.
+        if (std::getenv("NX_TRACE_VS_SHADOW"))
+            if (const Range& u = g_state.uniforms[0][0]; u.address && u.size >= 47 * 16)
+                if (auto* f = reinterpret_cast<const float*>(guest_bytes(u.address)))
+                    for (int row = 42; row <= 46; row++)
+                        log("  vs shadow c3[%d] @%llx: %g %g %g %g", row, (unsigned long long)u.address,
+                            f[4 * row], f[4 * row + 1], f[4 * row + 2], f[4 * row + 3]);
         for (int blk = 1; blk <= 3 && std::getenv("NX_TRACE_VS_BLOCKS"); blk++)
             if (const Range& u = g_state.uniforms[0][blk]; u.address)
                 if (auto* f = reinterpret_cast<const float*>(guest_bytes(u.address)))

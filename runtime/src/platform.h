@@ -45,6 +45,8 @@ std::string setting(const std::string& key);  // a player setting: config.txt (A
 // ---- display, input, audio ----
 void* create_window();       // native window handle for the Vulkan surface (HWND / ANativeWindow*), kept alive
 void release_window(void* w);  // done with a handle from create_window
+// First-launch Vulkan shader preparation UI. Progress counts successfully created pipelines.
+void shader_compile_progress(uint64_t compiled, uint64_t total, bool visible);
 uint64_t window_generation();  // changes when the OS replaced the window (Android: app back from the background)
 bool window_minimized();     // no surface to draw to (minimized / app in background)
 void window_size(uint32_t& w, uint32_t& h);  // client size in pixels
@@ -82,6 +84,8 @@ void gpu_turbo();  // NX_GPU_TURBO=1: the Adreno GPU at its highest clock (perf_
 // role 0: the thread that replays and presents (frame_presented ticks it); 1: the game's main thread.
 void frame_thread_tick(int role);
 void frame_presented();  // after each present to the display
+void overlay_game_interval(int interval);  // guest's desired interval in 60 Hz ticks
+void overlay_presented(uint64_t now_ns);   // host timestamp for a presented frame
 // Write watches (write_watch.cpp; page protection, POSIX): add fails when unsupported or full; take re-arms and
 // says whether the range was written since the last take; the crash handler calls fault first (true: handled).
 bool write_watch_add(uint64_t addr, uint64_t size);

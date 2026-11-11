@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <set>
 
 #include "nvn.h"
@@ -14,6 +15,15 @@
 #include "platform.h"
 
 namespace nx::nvn {
+
+namespace {
+struct ShadowMapLifeTrace {
+    uint64_t serial = 0, pool = 0, offset = 0, size = 0;
+    uint32_t width = 0, height = 0;
+};
+std::map<uint64_t, ShadowMapLifeTrace> shadow_map_lives;
+uint64_t shadow_map_life_serial = 0;
+}  // namespace
 
 std::recursive_mutex& gpu_lock();  // nvn_vk.cpp
 
@@ -328,6 +338,36 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
         t.memory = pool_host(*p, t.offset);
         t.gpu = p->gpu + t.offset;
     }
+    // NX_TRACE_SHADOW_MAP_LIFETIME=1: record per-handle shadow-map lifetimes and overlapping live pool ranges.
+    static const bool trace_shadow_map_lifetime = std::getenv("NX_TRACE_SHADOW_MAP_LIFETIME") != nullptr;
+    if (trace_shadow_map_lifetime && t.format == 0x32 && t.width == t.height && t.width >= 1360 &&
+        shadow_map_lives.size() < 1024) {
+        ShadowMapLifeTrace life{++shadow_map_life_serial, t.pool, t.offset, t.storage_size, t.width, t.height};
+        const uint64_t end = t.offset + t.storage_size;
+        for (const auto& [other_guest, other] : shadow_map_lives) {
+            if (other_guest == guest || other.pool != t.pool) continue;
+            const uint64_t other_end = other.offset + other.size;
+            if (t.offset < other_end && other.offset < end)
+                log("shadow-map-overlap frame %llu new life %llu texture %llx offset %llx size %llx %ux%u "
+                    "with live life %llu texture %llx offset %llx size %llx %ux%u overlap %llx..%llx",
+                    (unsigned long long)g_frame.load(std::memory_order_relaxed),
+                    (unsigned long long)life.serial, (unsigned long long)guest, (unsigned long long)t.offset,
+                    (unsigned long long)t.storage_size, t.width, t.height,
+                    (unsigned long long)other.serial, (unsigned long long)other_guest,
+                    (unsigned long long)other.offset, (unsigned long long)other.size, other.width, other.height,
+                    (unsigned long long)std::max(t.offset, other.offset), (unsigned long long)std::min(end, other_end));
+        }
+        shadow_map_lives[guest] = life;
+        const LoadedModule* caller = module_at(c.x[30]);
+        log("shadow-map-life init frame %llu life %llu texture %llx guest-memory %llx pool %llx offset %llx end %llx size %llx "
+            "format %#x %ux%u flags %#x caller %s+%llx",
+            (unsigned long long)g_frame.load(std::memory_order_relaxed), (unsigned long long)life.serial,
+            (unsigned long long)guest,
+            (unsigned long long)t.memory, (unsigned long long)t.pool, (unsigned long long)t.offset,
+            (unsigned long long)(t.offset + t.storage_size), (unsigned long long)t.storage_size, t.format, t.width,
+            t.height, t.flags, caller ? caller->info->name : "unknown",
+            (unsigned long long)(caller ? c.x[30] - caller->base : c.x[30]));
+    }
     if (g_trace || trace_textures())
         log("nvn: texture %llx: memory %llx target %u format %#x %ux%ux%u levels %u samples %u flags %x size %llx block height %u "
             "swizzle %u%u%u%u", (unsigned long long)guest, (unsigned long long)t.memory, t.target, t.format, t.width, t.height, t.depth, t.levels,
@@ -335,12 +375,14 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
             t.swizzle[2], t.swizzle[3]);
     static const char* resolution_trace = std::getenv("NX_TRACE_RESOLUTION");
     static const uint64_t resolution_from = resolution_trace ? std::strtoull(resolution_trace, nullptr, 10) : 0;
-    static std::set<std::array<uint64_t, 5>> resolution_textures;
+    static std::set<std::array<uint64_t, 6>> resolution_textures;
     static unsigned resolution_texture_logs = 0;
     if (resolution_trace && g_frame.load(std::memory_order_relaxed) >= resolution_from && t.width >= 1280 && t.height >= 720 &&
         resolution_texture_logs < 128) {
         const LoadedModule* caller = module_at(c.x[30]);
-        std::array<uint64_t, 5> key{c.x[30], t.target, t.format, t.width, t.height};
+        // Include the NVNtexture handle: two same-sized shadow maps can be created at one call site but
+        // occupy overlapping pool ranges, and both handles are needed to inspect that alias.
+        std::array<uint64_t, 6> key{c.x[30], t.target, t.format, t.width, t.height, guest};
         if (resolution_textures.insert(key).second) {
             resolution_texture_logs++;
             log("resolution texture: frame %llu caller %s+%llx texture %llx target %u format %#x %ux%u levels %u flags %#x size %llu",
@@ -438,6 +480,20 @@ void expire_kept() {
 void TextureFinalize(CPU& c) {
     auto guard = reinit_guard();
     uint64_t guest = c.x[0];
+    if (std::getenv("NX_TRACE_SHADOW_MAP_LIFETIME"))
+        if (auto* t = get<Texture>(guest); t && t->format == 0x32 && t->width == t->height && t->width >= 1360) {
+            auto life = shadow_map_lives.find(guest);
+            if (life != shadow_map_lives.end()) {
+                log("shadow-map-life finalize frame %llu life %llu texture %llx guest-memory %llx pool %llx offset %llx "
+                    "end %llx size %llx format %#x %ux%u",
+                    (unsigned long long)g_frame.load(std::memory_order_relaxed),
+                    (unsigned long long)life->second.serial, (unsigned long long)guest,
+                    (unsigned long long)t->memory, (unsigned long long)t->pool, (unsigned long long)t->offset,
+                    (unsigned long long)(t->offset + t->storage_size), (unsigned long long)t->storage_size,
+                    t->format, t->width, t->height);
+                shadow_map_lives.erase(life);
+            }
+        }
     if (trace_textures()) log("nvn: texture %llx finalized", (unsigned long long)guest);
     static const bool old = texture_race_old();
     {

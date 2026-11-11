@@ -291,6 +291,10 @@ ANativeWindow* android_window() { return g_window.load(); }  // platform_android
 
 bool window_minimized() { return !g_visible || !g_window; }
 
+void shader_compile_progress(uint64_t, uint64_t, bool) {}
+void overlay_game_interval(int) {}
+void overlay_presented(uint64_t) {}
+
 void screen_size(uint32_t& w, uint32_t& h) {
     ANativeWindow* win = static_cast<ANativeWindow*>(create_window());
     int32_t a = ANativeWindow_getWidth(win), b = ANativeWindow_getHeight(win);

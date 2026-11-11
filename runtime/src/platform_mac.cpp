@@ -260,6 +260,10 @@ void release_window(void*) {}
 uint64_t window_generation() { return 1; }
 bool window_minimized() { return g_minimized; }
 
+void shader_compile_progress(uint64_t, uint64_t, bool) {}
+void overlay_game_interval(int) {}
+void overlay_presented(uint64_t) {}
+
 void window_size(uint32_t& w, uint32_t& h) {
     w = g_pixel_w;
     h = g_pixel_h;

@@ -1,6 +1,7 @@
 // am services (appletOE): application proxy, focus/operation-mode state, launch parameters.
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 
 #include "ipc.h"
@@ -9,6 +10,7 @@ namespace nx {
 
 namespace {
 std::atomic<int> g_internal_resolution_preset{0};
+std::atomic<int> g_game_language{0};
 }
 
 void set_internal_resolution_preset(int preset) {
@@ -25,6 +27,12 @@ float internal_resolution_scale() {
 uint32_t internal_resolution_target_width() {
     static constexpr uint32_t widths[] = {0, 1280, 1600, 1920, 2560};
     return widths[g_internal_resolution_preset.load(std::memory_order_relaxed)];
+}
+
+void set_game_language(int language) {
+    if (language < 0) language = 0;
+    if (language > 3) language = 3;
+    g_game_language.store(language, std::memory_order_relaxed);
 }
 
 namespace {
@@ -132,7 +140,15 @@ std::shared_ptr<Service> application_functions() {
         s.cmds[20] = [](IpcCtx& c) { c.push<uint64_t>(0); return 0u; };  // EnsureSaveData
         s.cmds[21] = [](IpcCtx& c) {                                      // GetDesiredLanguage
             uint64_t code = 0;
-            std::memcpy(&code, "en-US", 5);
+            static constexpr const char* codes[] = {"en-US", "it", "de", "fr"};
+            const int language = g_game_language.load(std::memory_order_relaxed);
+            const char* selected = codes[language >= 0 && language < 4 ? language : 0];
+            std::memcpy(&code, selected, std::strlen(selected));
+            static int logged_language = -1;
+            if (logged_language != language) {
+                log("oe: GetDesiredLanguage -> %s", selected);
+                logged_language = language;
+            }
             c.push<uint64_t>(code);
             return 0u;
         };
