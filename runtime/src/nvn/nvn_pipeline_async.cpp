@@ -76,10 +76,13 @@ std::shared_ptr<AsyncPipeline> compile_pipeline_async(std::shared_ptr<PipelineBu
         VkResult r = p_vkCreateGraphicsPipelines(vk_device(), pipeline_cache(), 1, &a->build->ci, nullptr, &p);
         std::lock_guard l(a->lock);
         a->pipeline = p, a->result = r, a->ns = plat::monotonic_ns() - t0, a->done = true;
+        a->finished.store(true, std::memory_order_release);
         a->cv.notify_all();
     });
     return a;
 }
+
+void run_on_pool(std::function<void()> job) { pool().push(std::move(job)); }
 
 void run_parallel(std::vector<std::function<void()>>& jobs) {
     if (!async_pipelines()) {  // NX_ASYNC_PIPELINES=0: one after another on this thread, as before (bisecting)
