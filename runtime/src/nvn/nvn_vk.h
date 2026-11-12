@@ -62,6 +62,10 @@ bool fsr_active();
 bool fsr_record(VkCommandBuffer cb, GpuImage& src, GpuImage& dst, VkExtent2D extent, const int32_t* crop);
 GpuImage* fsr_output();  // the last upscaled image, for frame dumps with NX_DUMP_FSR=1 (else null)
 void fsr_release();      // the swapchain goes away
+// nvn_fxaa.cpp: FXAA on the presented image (NX_FXAA, the overlay menu's Anti-aliasing setting).
+void set_fxaa(bool on);
+GpuImage* fxaa_record(VkCommandBuffer cb, GpuImage& src);  // the anti-aliased image, or null (off, or not RGBA8)
+void fxaa_release();
 bool vk_depth_clip_control();
 // The core features the device was created with (all the GPU has): depthClamp, depthBiasClamp, depthBounds, ...
 const VkPhysicalDeviceFeatures& vk_features();

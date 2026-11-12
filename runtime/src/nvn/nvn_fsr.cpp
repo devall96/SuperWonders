@@ -13,7 +13,7 @@
 #include <map>
 
 #include "nvn_vk.h"
-#include "fsr_spv.h"
+#include "post_spv.h"
 
 // The FSR headers' CPU side: FsrEasuCon / FsrRcasCon, the constants the shaders take.
 #define A_CPU 1
