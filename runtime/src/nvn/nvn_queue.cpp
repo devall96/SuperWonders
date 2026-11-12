@@ -20,6 +20,10 @@
 #include "nvn.h"
 #include "platform.h"
 
+namespace nx {
+uint64_t vsync_wait(uint64_t target);  // hle_vi.cpp
+}
+
 namespace nx::nvn {
 
 // Submits the game made and submits whose replay (and GPU work, write-backs) finished. The game records the next frame
@@ -337,22 +341,34 @@ void WindowSetPresentInterval(CPU& c) {
 }
 
 // (NVNqueue*, NVNwindow*, int textureIndex)
-// Frame pacing: a present returns no earlier than the window's present interval (in 60 Hz vsyncs) after the previous
-// one. On the Switch the texture-available sync of the next acquire does this; ours is signaled at once, so without
-// it the game runs as fast as it can once it is faster than 60 fps. A late frame is not snapped to the next vsync
-// (an 18 ms frame stays 18 ms, not 33). NX_NO_FRAME_LIMIT=1: unpaced.
+// Frame pacing: a present returns no earlier than the window's present interval in vsyncs after the previous one.
+// On the Switch the texture-available sync of the next acquire does this; ours is signaled at once, so without it
+// the game runs as fast as it can once it is faster than 60 fps. The vsyncs are the vi ticks (hle_vi.cpp: the
+// display's blank where it can be), so frames reach the display on its refresh, not on a clock drifting against it.
+// A late frame does not wait for the next vsync. NX_NO_FRAME_LIMIT=1, or fast-forward held: unpaced (the game's
+// logic steps once per frame, so it runs as fast as the machine renders).
 void pace_present(int interval) {
     static const bool off = std::getenv("NX_NO_FRAME_LIMIT") != nullptr;
     static uint64_t next = 0;
-    if (off || interval <= 0) return;
-    uint64_t now = plat::monotonic_ns();
-    if (next > now) plat::sleep_ns(next - now), now = plat::monotonic_ns();
+    if (off || interval <= 0 || plat::fast_forward()) return;
+    uint64_t now = vsync_wait(next);
     static uint64_t presents = 0, at2 = 0;  // how often the game asks for 30 fps (interval 2), per 600 presents
+    // Pacing: presents more than a vsync later than asked (a frame shown late or twice), and the longest gap.
+    static uint64_t last_ns = 0, late = 0, worst = 0;
+    const uint64_t t = plat::monotonic_ns();
+    if (last_ns) {
+        worst = std::max(worst, t - last_ns);
+        late += t - last_ns > uint64_t(interval + 1) * 16'666'667ull;
+    }
+    last_ns = t;
     at2 += interval >= 2;
-    if (++presents % 600 == 0)
-        log("nvn: %llu of the last 600 presents at interval >= 2", (unsigned long long)at2), at2 = 0, log_wait_sites();
-    uint64_t period = uint64_t(interval) * 16'666'667ull;
-    next = (next > now || now - next < period ? next : now) + period;
+    if (++presents % 600 == 0) {
+        log("nvn: of the last 600 presents %llu at interval >= 2, %llu late, longest gap %.1f ms",
+            (unsigned long long)at2, (unsigned long long)late, double(worst) / 1e6);
+        at2 = late = worst = 0;
+        log_wait_sites();
+    }
+    next = now + uint64_t(interval);
 }
 
 void QueuePresentTexture(CPU& c) {
