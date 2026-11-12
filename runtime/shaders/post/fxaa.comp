@@ -1,0 +1,47 @@
+#version 450
+// FXAA (fast approximate anti-aliasing) of the game's final image, before any upscaling (nvn_fxaa.cpp): the classic
+// luma-edge algorithm. Pixels whose 3x3 corner neighbourhood has little luma contrast are copied; on an edge, the
+// image is sampled along the edge direction (estimated from the corners) and the two- or four-tap blend is kept if
+// its luma stays inside the neighbourhood's range.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(push_constant) uniform Push {
+    vec2 inv_size;  // 1 / the image's size
+} pc;
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D dst;
+
+const float kEdgeMin = 1.0 / 32.0;    // below this contrast: no edge
+const float kEdgeRel = 1.0 / 8.0;     // ... or below this fraction of the brightest corner
+const float kReduceMul = 1.0 / 8.0;
+const float kReduceMin = 1.0 / 128.0;
+const float kSpanMax = 8.0;           // in pixels
+
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(dst);
+    if (p.x >= size.x || p.y >= size.y) return;
+    vec2 uv = (vec2(p) + 0.5) * pc.inv_size;
+    vec3 m = textureLod(src, uv, 0.0).rgb;
+    float nw = luma(textureLodOffset(src, uv, 0.0, ivec2(-1, -1)).rgb);
+    float ne = luma(textureLodOffset(src, uv, 0.0, ivec2(1, -1)).rgb);
+    float sw = luma(textureLodOffset(src, uv, 0.0, ivec2(-1, 1)).rgb);
+    float se = luma(textureLodOffset(src, uv, 0.0, ivec2(1, 1)).rgb);
+    float lm = luma(m);
+    float lmin = min(lm, min(min(nw, ne), min(sw, se)));
+    float lmax = max(lm, max(max(nw, ne), max(sw, se)));
+    if (lmax - lmin < max(kEdgeMin, lmax * kEdgeRel)) {
+        imageStore(dst, p, vec4(m, 1.0));
+        return;
+    }
+    vec2 dir = vec2(-((nw + ne) - (sw + se)), (nw + sw) - (ne + se));
+    float reduce = max((nw + ne + sw + se) * 0.25 * kReduceMul, kReduceMin);
+    float scale = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
+    dir = clamp(dir * scale, vec2(-kSpanMax), vec2(kSpanMax)) * pc.inv_size;
+    vec3 a = 0.5 * (textureLod(src, uv + dir * (1.0 / 3.0 - 0.5), 0.0).rgb +
+                    textureLod(src, uv + dir * (2.0 / 3.0 - 0.5), 0.0).rgb);
+    vec3 b = a * 0.5 + 0.25 * (textureLod(src, uv - dir * 0.5, 0.0).rgb + textureLod(src, uv + dir * 0.5, 0.0).rgb);
+    float lb = luma(b);
+    imageStore(dst, p, vec4(lb < lmin || lb > lmax ? a : b, 1.0));
+}

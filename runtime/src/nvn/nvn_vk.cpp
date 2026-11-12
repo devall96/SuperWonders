@@ -308,6 +308,7 @@ bool make_swapchain() {
         present_pass_release();
         overlay::release();
         fsr_release();
+        fxaa_release();
         p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
         g_swapchain = VK_NULL_HANDLE;
     }
@@ -658,6 +659,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         present_pass_release();
         overlay::release();
         fsr_release();
+        fxaa_release();
         if (g_swapchain) p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
         g_swapchain = VK_NULL_HANDLE;
         log("nvn/vk: new window: surface and swapchain re-made");
@@ -686,20 +688,23 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
     }
     bool drawn = src && present_pass_record(g_cb, *src, crop, index);  // nvn_present.cpp: leaves dst PRESENT_SRC
     // FSR 1 when the image is smaller than the window (nvn_fsr.cpp): leaves dst TRANSFER_DST, as the blit does.
-    const bool upscaled = src && !drawn && fsr_record(g_cb, *src, dst, g_sc_extent, crop);
-    if (src && !drawn && !upscaled) transition(g_cb, *src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    // FXAA first when on (nvn_fxaa.cpp): its output stands in for the game's image from here.
+    GpuImage* in = src && !drawn ? fxaa_record(g_cb, *src) : nullptr;
+    if (!in) in = src;
+    const bool upscaled = in && !drawn && fsr_record(g_cb, *in, dst, g_sc_extent, crop);
+    if (in && !drawn && !upscaled) transition(g_cb, *in, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     if (!drawn) transition(g_cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    if (src && !drawn && !upscaled) {
+    if (in && !drawn && !upscaled) {
         VkImageBlit blit{};
         blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        blit.srcOffsets[1] = {int32_t(src->width), int32_t(src->height), 1};
+        blit.srcOffsets[1] = {int32_t(in->width), int32_t(in->height), 1};
         // nvnWindowSetCrop is in guest pixels; convert its rectangle to the upscaled Vulkan image.
-        const uint32_t logical_width = src->logical_width ? src->logical_width : src->width;
-        const uint32_t logical_height = src->logical_height ? src->logical_height : src->height;
+        const uint32_t logical_width = in->logical_width ? in->logical_width : in->width;
+        const uint32_t logical_height = in->logical_height ? in->logical_height : in->height;
         if (crop && crop[2] > 0 && crop[3] > 0 && crop[0] + crop[2] <= int32_t(logical_width) &&
             crop[1] + crop[3] <= int32_t(logical_height)) {
-            const float scale_x = float(src->width) / float(logical_width);
-            const float scale_y = float(src->height) / float(logical_height);
+            const float scale_x = float(in->width) / float(logical_width);
+            const float scale_y = float(in->height) / float(logical_height);
             const int32_t x0 = int32_t(std::lround(crop[0] * scale_x));
             const int32_t y0 = int32_t(std::lround(crop[1] * scale_y));
             const int32_t x1 = int32_t(std::lround((crop[0] + crop[2]) * scale_x));
@@ -708,7 +713,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         }
         blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         blit.dstOffsets[1] = {int32_t(g_sc_extent.width), int32_t(g_sc_extent.height), 1};
-        p_vkCmdBlitImage(g_cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.image,
+        p_vkCmdBlitImage(g_cb, in->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.image,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
     }
     if (!drawn) transition(g_cb, dst, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
@@ -720,7 +725,8 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
     if (presents % 300 == 0) zero_draws_log();
     frame_sig_flush(presents);
     const bool due = frame_dump_due(presents);
-    GpuImage* shown = upscaled && fsr_output() ? fsr_output() : src;  // NX_DUMP_FSR: the upscaled image
+    GpuImage* shown = src;  // NX_DUMP_FSR: the image as presented (after FXAA and FSR 1)
+    if (std::getenv("NX_DUMP_FSR")) shown = upscaled && fsr_output() ? fsr_output() : in;
     bool dump = shown && due;
     if (dump) transition(g_cb, *shown, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);  // the present pass left it sampled
     dump = dump && frame_dump_record(g_cb, *shown);
