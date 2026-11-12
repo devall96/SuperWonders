@@ -1,4 +1,5 @@
-// What the runtime needs from the host OS. platform_win.cpp and platform_android.cpp implement it.
+// What the runtime needs from the host OS. platform_win.cpp, platform_android.cpp, platform_mac.cpp and
+// platform_linux.cpp implement it.
 #pragma once
 
 #include <cstddef>
