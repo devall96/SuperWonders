@@ -48,6 +48,10 @@ void gpu_image_memory_freed(uint64_t bytes);
 uint64_t trim_reusable_image_cache();
 
 VkDevice vk_device();
+VkInstance vk_instance();     // for the overlay (overlay/overlay_vk.cpp)
+uint32_t vk_queue_family();
+void* vk_gipa();              // the loader's vkGetInstanceProcAddr
+VkQueue vk_queue();
 bool vk_depth_clip_control();
 // The core features the device was created with (all the GPU has): depthClamp, depthBiasClamp, depthBounds, ...
 const VkPhysicalDeviceFeatures& vk_features();
