@@ -862,6 +862,10 @@ VkImageView sampled_view(VkCommandBuffer cb, uint64_t texture, const ImageShape&
                                           (unsigned long long)no_image, (unsigned long long)incompatible);
         return dummy_view(cb, shape);
     }
+    // A depth-compare binding on a colour image the GPU cannot compare (Wonder's 4x4 "no shadow" stand-ins on AMD):
+    // its D32 twin (nvn_compare_twin.cpp).
+    if (shape.depth && compare_twin_wanted(*img))
+        if (VkImageView twin = compare_twin_view(cb, *img, view_type(shape))) return twin;
     *layout = img->rendered ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     transition(cb, *img, *layout);
     // The swizzle belongs to the texture (its builder, or its pool view), not to the image: an image may be shared
