@@ -249,6 +249,9 @@ else()
         # LLVM-MinGW ships the XAudio2 2.9 import library under its SDK name. Its plain "xinput" is XInput 1.3 (the
         # DirectX 2010 redistributable, missing on a clean Windows); 1.4 ships with Windows 8 and later.
         target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk xinput1_4 xaudio2_9 ole32 psapi)
+        # libc++ and libunwind linked in: without it wonder.exe needs libc++.dll and libunwind.dll next to it, which
+        # nothing copies there (the portable pack copies the MSVC runtime). The UCRT stays a system DLL.
+        target_link_options(${NX_GAME} PRIVATE -static)
     else()
         target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk xinput xaudio2 ole32 psapi)
     endif()
