@@ -78,6 +78,8 @@ struct Bound {
     VkRect2D scissor{};
     float blend[4] = {};
     uint32_t raster[10] = {};  // raster_dynamic's inputs: stencil reference and masks per face, the depth bias
+    bool has_raster_depth = false;
+    RasterDepthState raster_depth{};  // GPL dynamic mode (nvn_pipeline.h): the cull/depth/stencil state set
 } g_bound;
 uint64_t g_state_set = 0, g_state_kept = 0;  // state commands recorded and left out, for the log
 
@@ -433,6 +435,16 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         g_state_kept++;
     }
     bind_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout);
+    // GPL dynamic mode: the rasterizer and depth/stencil state the pipeline leaves to the command buffer.
+    if (gpl_dynamic_state()) {
+        const RasterDepthState rd = raster_depth_state(key);
+        if (!g_bound.has_raster_depth || std::memcmp(&rd, &g_bound.raster_depth, sizeof rd) != 0) {
+            set_raster_depth_state(cb, rd);
+            g_bound.raster_depth = rd, g_bound.has_raster_depth = true, g_state_set++;
+        } else {
+            g_state_kept++;
+        }
+    }
 
     // The vertex buffers resolved above, plus the zero stream (binding 15).
     for (uint32_t s = 0; s < 15; s++)

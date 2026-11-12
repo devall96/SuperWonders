@@ -8,6 +8,7 @@
 #include <atomic>
 #include <vector>
 
+#include "nvn_pipeline.h"
 #include "nvn_pipeline_async.h"
 #include "nvn_vk.h"
 #include "platform.h"
@@ -115,6 +116,7 @@ void creation_log(uint64_t frames) {
             "%llu draws skipped while compiling",
             (unsigned long long)frames, (unsigned long long)g_pipelines, double(g_pipeline_ns) / 1e6,
             (unsigned long long)g_astc, double(g_astc_ns) / 1e6, (unsigned long long)g_pipelines_skipped);
+    gpl_log();
     g_pipelines = g_pipeline_ns = g_astc = g_astc_ns = g_pipelines_skipped = 0;
     static uint64_t windows = 0;
     if (++windows % 10 == 0) pipeline_cache_save(), save_pipeline_keys();  // on the background writer
