@@ -1,5 +1,6 @@
 // NVN sampler states as Vulkan samplers (split from nvn_pipeline.cpp).
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
@@ -24,7 +25,28 @@ VkSamplerAddressMode vk_wrap(uint32_t w) {  // NVN: 0 clamp, 1 repeat, 2 mirror 
     }
 }
 
+std::atomic<int> g_anisotropy{0};  // the player's setting: 0 the game's own, else 2, 4, 8 or 16
+
+// Anisotropic filtering raised to the player's level (NX_ANISOTROPY=<0|2|4|8|16> overrides the setting). Latched at
+// the first sampler: samplers are cached per texture slot for the session, so a change applies after a restart.
+float anisotropy_floor() {
+    static const float level = [] {
+        int a = g_anisotropy.load();
+        if (const char* e = std::getenv("NX_ANISOTROPY")) a = std::atoi(e);
+        a = a >= 16 ? 16 : a >= 8 ? 8 : a >= 4 ? 4 : a >= 2 ? 2 : 0;
+        if (a && !vk_features().samplerAnisotropy) {
+            log("nvn/vk: anisotropic filtering %dx asked, the GPU has none", a);
+            return 0.0f;
+        }
+        if (a) log("nvn/vk: anisotropic filtering at least %dx on mipmapped linear samplers", a);
+        return float(a);
+    }();
+    return level;
+}
+
 }  // namespace
+
+void set_anisotropy(int level) { g_anisotropy = level; }
 
 // ---- samplers -------------------------------------------------------------------------------------------------------
 
@@ -53,8 +75,13 @@ VkSampler sampler_for(const SamplerInfo& s, bool shadow) {
     // sampler return 0 (all text invisible).
     ci.minLod = m <= 1 ? 0.0f : std::max(0.0f, s.lod_min);
     ci.maxLod = m <= 1 ? 0.25f : std::max(ci.minLod, s.lod_max);  // no mipmapping: level 0 only
-    ci.anisotropyEnable = s.max_anisotropy > 1.0f;
-    ci.maxAnisotropy = std::min(s.max_anisotropy, 16.0f);
+    // The game's anisotropy, raised to the player's level for mipmapped linear sampling (never for nearest
+    // filtering: pixel-art and lookup textures stay exact).
+    float aniso = s.max_anisotropy;
+    if (ci.minFilter == VK_FILTER_LINEAR && ci.magFilter == VK_FILTER_LINEAR && m >= 2) aniso = std::max(aniso, anisotropy_floor());
+    if (aniso > 1.0f && !vk_features().samplerAnisotropy) aniso = 1.0f;
+    ci.anisotropyEnable = aniso > 1.0f;
+    ci.maxAnisotropy = std::min(aniso, 16.0f);
     ci.compareEnable = shadow;
     ci.compareOp = shadow ? vk_compare(s.compare_func) : VK_COMPARE_OP_ALWAYS;
     bool white = s.border[3] > 0.5f && s.border[0] > 0.5f;
