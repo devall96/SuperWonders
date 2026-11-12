@@ -8,10 +8,12 @@
 // light probe) still waits, so nothing is lost. The startup shader preparation runs its pipelines on the same pool.
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include "nvn_pipeline.h"
@@ -22,6 +24,7 @@ namespace nx::nvn {
 // compiles it. Never copied: the create info points into its own members.
 struct PipelineBuild {
     PipelineKey key;  // a copy: ri.pColorAttachmentFormats points into it
+    std::string vs_id, fs_id;  // the stages' module identities (hash and patches), for the GPL library keys
     VkPipelineShaderStageCreateInfo stages[2]{};
     std::vector<VkVertexInputAttributeDescription> attrs;
     std::vector<VkVertexInputBindingDescription> binds;
@@ -51,6 +54,7 @@ struct AsyncPipeline {
     VkResult result = VK_NOT_READY;
     VkPipeline pipeline = VK_NULL_HANDLE;
     uint64_t ns = 0;  // the compile's own time on the worker
+    std::atomic<bool> finished{false};  // `done` without the lock (polled per draw by the GPL swap, nvn_pipeline.cpp)
     bool ready() {
         std::lock_guard l(lock);
         return done;
@@ -66,6 +70,8 @@ struct AsyncPipeline {
 bool async_pipelines();
 extern uint64_t g_pipelines_skipped;  // draws skipped while their pipeline compiled (replay thread; logged per window)
 std::shared_ptr<AsyncPipeline> compile_pipeline_async(std::shared_ptr<PipelineBuild> build);
+// A job on the same worker pool (the GPL libraries a skipped draw's program needs, nvn_pipeline.cpp).
+void run_on_pool(std::function<void()> job);
 // Runs every job on the worker pool and returns when all have finished.
 void run_parallel(std::vector<std::function<void()>>& jobs);
 
