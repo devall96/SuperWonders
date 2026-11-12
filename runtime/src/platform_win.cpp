@@ -83,7 +83,61 @@ void start_thread(ThreadFn fn, void* arg, size_t stack_size) {
 
 void exit_thread() { ExitThread(0); }
 void exit_process(int code) { nx::nvn::flush_pipeline_cache(); ExitProcess(UINT(code)); }
-void sleep_ns(int64_t ns) { std::this_thread::sleep_for(std::chrono::nanoseconds(ns)); }
+void sleep_ns(int64_t ns) {
+    // A high-resolution waitable timer (Windows 10 1803+): Sleep rounds to the system tick (1 to 15.6 ms), and the
+    // 60 Hz pacing jittered by that much.
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x2
+#endif
+    thread_local HANDLE timer =
+        CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    LARGE_INTEGER due;
+    due.QuadPart = -(ns / 100);  // relative, in 100 ns
+    if (!timer || !SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+        std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
+        return;
+    }
+    WaitForSingleObject(timer, INFINITE);
+}
+
+// D3DKMTWaitForVerticalBlankEvent on the adapter output that shows the game window (gdi32, no WDK header).
+bool wait_vblank() {
+    struct OpenFromHdc { HDC hdc; UINT adapter; LUID luid; UINT source; };
+    struct Blank { UINT adapter; UINT device; UINT source; };
+    using OpenFn = LONG(APIENTRY*)(OpenFromHdc*);
+    using WaitFn = LONG(APIENTRY*)(const Blank*);
+    static const HMODULE gdi = GetModuleHandleW(L"gdi32.dll");
+    static const auto open = gdi ? reinterpret_cast<OpenFn>(GetProcAddress(gdi, "D3DKMTOpenAdapterFromHdc")) : nullptr;
+    static const auto wait = gdi ? reinterpret_cast<WaitFn>(GetProcAddress(gdi, "D3DKMTWaitForVerticalBlankEvent")) : nullptr;
+    static const bool timer = std::getenv("NX_TIMER_VSYNC") != nullptr;  // the 60 Hz timer instead (comparing)
+    static HMONITOR monitor = nullptr;
+    static Blank blank{};
+    static int per_tick = 0;  // blanks per 1/60 s; 0: not paced on the display
+    if (timer || !open || !wait || !g_window) return false;
+    // shortcut: the adapter handle of a monitor the window left is not closed (moving monitors is rare).
+    if (HMONITOR m = MonitorFromWindow(g_window, MONITOR_DEFAULTTOPRIMARY); m != monitor) {
+        monitor = m, per_tick = 0;
+        MONITORINFOEXW mi{};
+        mi.cbSize = sizeof mi;
+        DEVMODEW dm{};
+        dm.dmSize = sizeof dm;
+        int hz = 0;
+        if (GetMonitorInfoW(m, &mi) && EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)) {
+            hz = int(dm.dmDisplayFrequency);  // 59.94 Hz reads 59 or 60
+            int n = (hz + 30) / 60;
+            if (n >= 1 && std::abs(hz - 60 * n) <= 1)
+                if (HDC dc = CreateDCW(nullptr, mi.szDevice, nullptr, nullptr)) {
+                    OpenFromHdc o{dc};
+                    if (open(&o) == 0) blank = {o.adapter, 0, o.source}, per_tick = n;
+                    DeleteDC(dc);
+                }
+        }
+        log("display: %d Hz, the game paced on %s", hz, per_tick ? "its vertical blank" : "a 60 Hz timer");
+    }
+    for (int k = 0; k < per_tick; k++)
+        if (wait(&blank) != 0) return per_tick = 0, false;
+    return per_tick != 0;
+}
 void yield() { SwitchToThread(); }
 void set_thread_name(const char*) {}
 float default_render_scale() { return 1.0f; }
@@ -685,6 +739,8 @@ static bool key(int vk) {
     return vk > 0 && g_window && GetForegroundWindow() == g_window && (GetAsyncKeyState(vk) & 0x8000);
 }
 static std::array<bool, kPcControlCount> g_previous_controller_state{};
+
+bool fast_forward() { return key(VK_TAB); }
 
 bool headless() {  // NX_HEADLESS (platform.h)
     static const bool on = std::getenv("NX_HEADLESS") != nullptr;
