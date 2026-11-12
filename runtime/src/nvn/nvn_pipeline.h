@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <cstring>
+#include <map>
+#include <string>
 #include <vector>
 
 #include "nvn_shaders.h"
@@ -101,6 +103,20 @@ bool resize_shared_memory(const std::vector<uint32_t>& in, uint32_t bytes, std::
 bool default_unwritten_inputs(const std::vector<uint32_t>& in, uint32_t locations, std::vector<uint32_t>& out);
 // The fragment input locations `vs` does not write (0 without both stages).
 uint32_t unwritten_inputs(const ShaderInfo* vs, const ShaderInfo* fs);
+// Integer textures (nvn_spirv_patch.cpp). The offline translator never sees texture formats and declares every
+// binding as a float sampler; on Maxwell an integer texture returns the integer's bits, which the code reinterprets
+// (`float(floatBitsToUint(texelFetch(...).x))`). In Vulkan a float sampler on a UINT/SINT view is undefined (AMD
+// returns other values). The draws record which bindings are sampled with integer views (note_int_texture, from
+// gather_textures); those bindings are then declared as integer images and every result is bitcast to float.
+uint32_t vk_int_kind(VkFormat format);  // 0 float or normalized, 1 unsigned integer, 2 signed integer
+// Records the kind of a binding (set 2) of `s`. True when it is new: modules and pipelines of `s` change.
+bool note_int_texture(const ShaderInfo* s, uint32_t binding, uint32_t kind);
+uint32_t int_texture_kind(const ShaderInfo* s, uint32_t binding);  // 0 when none recorded
+uint32_t int_texture_generation(const ShaderInfo* s);              // changes with every new record of `s`
+std::string int_texture_key(const ShaderInfo* s);                  // the records of `s`, for module caches
+std::map<uint32_t, uint32_t> int_texture_kinds(const ShaderInfo* s);  // binding -> kind
+bool patch_int_textures(const std::vector<uint32_t>& in, const std::map<uint32_t, uint32_t>& kinds,
+                        std::vector<uint32_t>& out);
 // Function-local variables without an initializer start at 0 (nvn_spirv_locals.cpp), as on Maxwell/NVIDIA.
 bool zero_function_locals(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
 // The code of a stage's module: its SPIR-V with every patch above that applies (`kinds` as patch_int_inputs, or

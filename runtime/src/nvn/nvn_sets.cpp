@@ -647,6 +647,17 @@ uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders) {
         if (texture ? !sampled_ready(texture) : !dummy_ready(b->image)) out |= kNeedBreak;
         if (!texture) continue;
         GpuImage* img = image_of(texture);
+        // An integer view behind a float declaration: the module declares it as an integer image, and the sampler
+        // filters nearest (integer formats have no linear filtering; Maxwell ignores the filter for them).
+        if (img && b->image.component == ScalarType::Float && !b->image.depth)
+            if (uint32_t kind = vk_int_kind(view_format(*img, r.view.format))) {
+                note_int_texture(s, b->binding, kind);
+                SamplerInfo nearest = r.sampler;
+                nearest.min_filter = nearest.min_filter >= 2 ? 2u : 0u;
+                nearest.mag_filter = 0;
+                r.sampler = nearest;
+                r.vk_sampler = sampler_for(nearest, false);
+            }
         // Sampling one of the open pass's targets (a depth buffer read back by the character lighting) needs what
         // was rendered stored first: a fresh pass. SetRenderTargets used to end every pass, which did this by chance
         // (docs/nvn/DEBUG.md #35). Only when a draw of this pass wrote it (pass_wrote, nvn_draw.cpp).
