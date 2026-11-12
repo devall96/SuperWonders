@@ -55,6 +55,7 @@ VkSurfaceTransformFlagBitsKHR g_sc_transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT
 VkFormat g_sc_format = VK_FORMAT_B8G8R8A8_UNORM;
 VkSemaphore g_acquired = VK_NULL_HANDLE, g_rendered = VK_NULL_HANDLE;
 VkBool32 g_depth_clip_control = VK_FALSE;
+bool g_gpl = false, g_cache_control = false;  // vk_gpl(), vk_pipeline_cache_control()
 VkPhysicalDeviceFeatures g_features{};  // the core features enabled (vk_features())
 VkDescriptorPool g_descriptors = VK_NULL_HANDLE;
 
@@ -202,7 +203,42 @@ bool init() {
         dexts.push_back("VK_KHR_portability_subset");
         *tail = &fport, tail = &fport.pNext;
     }
+    // VK_EXT_graphics_pipeline_library (nvn_pipeline.cpp): last in the chain, so it can be unlinked again when unused.
+    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT fgpl{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
+    const bool gpl_ext = has_extension(dext, "VK_EXT_graphics_pipeline_library") &&
+                         has_extension(dext, "VK_KHR_pipeline_library");
+    void** gpl_link = tail;
+    if (gpl_ext) *tail = &fgpl, tail = &fgpl.pNext;
     p_vkGetPhysicalDeviceFeatures2(g_physical, &features);
+    {
+        // NX_GPL=0: off; NX_GPL=1: on even without fast linking; default: on with graphicsPipelineLibrary and
+        // fast linking (without it a link may cost a compile, and the old path is no worse).
+        const char* e = std::getenv("NX_GPL");
+        VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT pgpl{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
+        if (gpl_ext && fgpl.graphicsPipelineLibrary) {
+            VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &pgpl};
+            p_vkGetPhysicalDeviceProperties2(g_physical, &p2);
+        }
+        const bool wanted = !(e && e[0] == '0');
+        const bool forced = e && e[0] == '1';
+        g_gpl = wanted && gpl_ext && fgpl.graphicsPipelineLibrary && f13.dynamicRendering &&
+                (pgpl.graphicsPipelineLibraryFastLinking || forced);
+        g_cache_control = f13.pipelineCreationCacheControl;
+        log("nvn/vk: graphics pipeline library: extension %u, feature %u, fast linking %u, independent "
+            "interpolation %u: %s; pipelineCreationCacheControl %u",
+            gpl_ext ? 1u : 0u, fgpl.graphicsPipelineLibrary, pgpl.graphicsPipelineLibraryFastLinking,
+            pgpl.graphicsPipelineLibraryIndependentInterpolationDecoration,
+            g_gpl ? "used" : !wanted ? "off (NX_GPL=0)" : "not used", g_cache_control ? 1u : 0u);
+        if (g_gpl) {
+            dexts.push_back("VK_KHR_pipeline_library");
+            dexts.push_back("VK_EXT_graphics_pipeline_library");
+        } else if (gpl_ext) {
+            *gpl_link = nullptr;  // not enabled: its feature struct must not reach vkCreateDevice
+            tail = gpl_link;
+        }
+    }
     // Of 1.1 and 1.2, only what the translated shaders and samplers use (they are valid only with it enabled):
     // shaderDrawParameters, for the BaseInstance/BaseVertex the shaders take the instance and vertex ids relative to;
     // samplerMirrorClampToEdge, for NVN's mirror-clamp wrap modes (nvn_sampler.cpp).
@@ -405,6 +441,8 @@ VkPhysicalDevice vk_physical() { return g_physical; }
 VkQueue vk_queue() { return g_queue; }
 uint32_t vk_queue_family() { return g_family; }
 bool vk_depth_clip_control() { return g_depth_clip_control; }
+bool vk_gpl() { return g_gpl; }
+bool vk_pipeline_cache_control() { return g_cache_control; }
 const VkPhysicalDeviceFeatures& vk_features() { return g_features; }
 
 uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags want) {

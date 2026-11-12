@@ -51,6 +51,13 @@ uint64_t trim_reusable_image_cache();
 
 VkDevice vk_device();
 bool vk_depth_clip_control();
+// VK_EXT_graphics_pipeline_library is enabled and used (nvn_pipeline.cpp; NX_GPL, nvn_vk.cpp).
+bool vk_gpl();
+// VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT works (Vulkan 1.3 pipelineCreationCacheControl).
+bool vk_pipeline_cache_control();
+// The serial the submit being recorded will get (nvn_frames.cpp): a handle it uses may go once
+// frame_completed() reaches it.
+uint64_t frame_recording_serial();
 // The core features the device was created with (all the GPU has): depthClamp, depthBiasClamp, depthBounds, ...
 const VkPhysicalDeviceFeatures& vk_features();
 VkPhysicalDevice vk_physical();
