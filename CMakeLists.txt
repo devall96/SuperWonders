@@ -246,8 +246,9 @@ else()
                    runtime/src/memguard_win.cpp)
     target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include")
     if(MINGW)
-        # LLVM-MinGW ships the XAudio2 2.9 import library under its SDK name.
-        target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk xinput xaudio2_9 ole32 psapi)
+        # LLVM-MinGW ships the XAudio2 2.9 import library under its SDK name. Its plain "xinput" is XInput 1.3 (the
+        # DirectX 2010 redistributable, missing on a clean Windows); 1.4 ships with Windows 8 and later.
+        target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk xinput1_4 xaudio2_9 ole32 psapi)
     else()
         target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk xinput xaudio2 ole32 psapi)
     endif()
