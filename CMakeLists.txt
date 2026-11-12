@@ -83,6 +83,12 @@ if(NX_TESTS AND NOT ANDROID)
         target_include_directories(astc_gpu_test PRIVATE runtime/src/nvn "${NX_SHADER_OUT}" "${NX_VULKAN_SDK}/Include")
         target_link_libraries(astc_gpu_test PRIVATE "${NX_VULKAN_SDK}/Lib/vulkan-1.lib")
         add_test(NAME astc_gpu COMMAND astc_gpu_test)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")  # the same, with the system's Vulkan loader and headers
+        add_executable(astc_gpu_test tests/astc_gpu_test.cpp runtime/src/nvn/nvn_astc.cpp
+                       "${NX_SHADER_OUT}/astc_decode.comp.inc")
+        target_include_directories(astc_gpu_test PRIVATE runtime/src/nvn "${NX_SHADER_OUT}")
+        target_link_libraries(astc_gpu_test PRIVATE vulkan)
+        add_test(NAME astc_gpu COMMAND astc_gpu_test)
     endif()
     add_executable(shader_cache_test tests/shader_cache_test.cpp runtime/src/nvn/nvn_shaders.cpp
                    runtime/src/nvn/nvn_spirv_reflect.cpp)
