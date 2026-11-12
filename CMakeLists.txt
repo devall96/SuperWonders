@@ -207,7 +207,22 @@ set(NX_RUNTIME_SOURCES
     runtime/src/vk_swapchain.cpp
     runtime/src/vk_gen.cpp
     runtime/src/vk_present.cpp
+    runtime/src/overlay/settings.cpp
+    runtime/src/overlay/overlay.cpp
+    runtime/src/overlay/overlay_menu.cpp
+    runtime/src/overlay/overlay_vk.cpp
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/backends/imgui_impl_vulkan.cpp
 )
+# Dear ImGui (third_party/imgui, MIT): the overlay menu. Its Vulkan backend loads functions through the runtime's
+# loader (ImGui_ImplVulkan_LoadFunctions), like the rest of the runtime.
+set_source_files_properties(third_party/imgui/backends/imgui_impl_vulkan.cpp PROPERTIES
+    COMPILE_DEFINITIONS "VK_NO_PROTOTYPES;IMGUI_IMPL_VULKAN_NO_PROTOTYPES")
+set_source_files_properties(runtime/src/overlay/overlay_vk.cpp PROPERTIES
+    COMPILE_DEFINITIONS "IMGUI_IMPL_VULKAN_NO_PROTOTYPES")
 file(GLOB NX_GAME_SOURCES CONFIGURE_DEPENDS "${NX_GAME_DIR}/*.cpp")
 list(APPEND NX_RUNTIME_SOURCES ${NX_GAME_SOURCES} ${NX_SHADER_SOURCES})
 
@@ -217,7 +232,7 @@ if(ANDROID)
     add_library(${NX_GAME} SHARED ${NX_RUNTIME_SOURCES} runtime/src/platform_android.cpp
         runtime/src/platform_android_input.cpp runtime/src/platform_android_audio.cpp runtime/src/memguard_android.cpp
         "${GLUE}/android_native_app_glue.c")
-    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include" "${GLUE}")
+    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src third_party/imgui "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include" "${GLUE}")
     # Our ANativeActivity_onCreate (platform_android.cpp) runs first, on the UI thread, then calls the glue's.
     set_source_files_properties("${GLUE}/android_native_app_glue.c" PROPERTIES
         COMPILE_DEFINITIONS "ANativeActivity_onCreate=glue_ANativeActivity_onCreate")
@@ -231,7 +246,7 @@ elseif(APPLE)
     find_package(SDL3 REQUIRED CONFIG)
     find_path(NX_VULKAN_INCLUDE vulkan/vulkan.h HINTS /opt/homebrew/include /usr/local/include)
     add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_mac.cpp runtime/src/memguard_mac.cpp)
-    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
+    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src third_party/imgui "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
     target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk SDL3::SDL3)
     target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden)
     # The executable loads near 0x1_0000_0000, below the guest ranges (0x40_0000_0000 and up). The game runs on its
@@ -256,7 +271,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(NX_VULKAN_INCLUDE "${vulkanheaders_SOURCE_DIR}/include")
     endif()
     add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_linux.cpp runtime/src/memguard_linux.cpp)
-    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
+    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src third_party/imgui "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
     target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk SDL3::SDL3 Threads::Threads ${CMAKE_DL_LIBS})
     target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden)
     # The executable is position dependent and loads at 0x40_0000, far below the guest ranges (0x40_0000_0000 and
@@ -286,7 +301,7 @@ else()
     endif()
     add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_win.cpp runtime/src/pc_menu_win.cpp
                    runtime/src/memguard_win.cpp)
-    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include")
+    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src third_party/imgui "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include")
     if(MINGW)
         # LLVM-MinGW ships the XAudio2 2.9 import library under its SDK name.
         target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk xinput xaudio2_9 ole32 psapi)

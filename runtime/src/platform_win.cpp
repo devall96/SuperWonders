@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -25,6 +26,7 @@
 #define _WIN32_WINNT 0x0A00
 #endif
 #include <windows.h>
+#include <windowsx.h>
 #include <xaudio2.h>
 #include <xinput.h>
 #include <SDL3/SDL.h>
@@ -38,6 +40,7 @@
 
 #include "kernel.h"
 #include "nvn/nvn_vk.h"
+#include "overlay/overlay.h"
 #include "pc_menu_win.h"
 #include "svc_am.h"
 #include "platform.h"
@@ -222,6 +225,82 @@ static constexpr uint64_t kPadActionBits[kPcControlCount] = {
 
 static void metrics_reposition();
 
+// ---- the Dear ImGui overlay menu (overlay/; NX_IMGUI_MENU=0: the Win32 menu and metrics window as before) ----------
+
+static overlay::Settings to_overlay(const PcMenuState& s) {
+    overlay::Settings o;
+    o.width = s.width, o.height = s.height, o.internal_resolution = s.internal_resolution, o.volume = s.volume;
+    o.language = s.language, o.game_language = s.game_language, o.memory_limit_gb = s.memory_limit_gb;
+    o.controller_preset = s.controller_preset, o.muted = s.muted, o.fullscreen = s.fullscreen;
+    o.always_on_top = s.always_on_top, o.metrics_enabled = s.metrics_enabled, o.low_vram_profile = s.low_vram_profile;
+    o.metric_fps = s.metric_fps, o.metric_one_percent_low = s.metric_one_percent_low;
+    o.metric_game_speed = s.metric_game_speed, o.metric_frametime_graph = s.metric_frametime_graph;
+    o.overlay_position = s.overlay_position, o.controller_custom_mask = s.controller_custom_mask;
+    for (size_t i = 0; i < kPcControlCount; ++i)
+        o.keyboard_bindings[i] = s.keyboard_bindings[i], o.controller_bindings[i] = s.controller_bindings[i];
+    return o;
+}
+
+static PcMenuState from_overlay(const overlay::Settings& o) {
+    PcMenuState s = g_pc_settings;
+    s.width = o.width, s.height = o.height, s.internal_resolution = o.internal_resolution, s.volume = o.volume;
+    s.language = o.language, s.game_language = o.game_language, s.memory_limit_gb = o.memory_limit_gb;
+    s.controller_preset = o.controller_preset, s.muted = o.muted, s.fullscreen = o.fullscreen;
+    s.always_on_top = o.always_on_top, s.metrics_enabled = o.metrics_enabled, s.low_vram_profile = o.low_vram_profile;
+    s.metric_fps = o.metric_fps, s.metric_one_percent_low = o.metric_one_percent_low;
+    s.metric_game_speed = o.metric_game_speed, s.metric_frametime_graph = o.metric_frametime_graph;
+    s.overlay_position = o.overlay_position, s.controller_custom_mask = o.controller_custom_mask;
+    for (size_t i = 0; i < kPcControlCount; ++i)
+        s.keyboard_bindings[i] = o.keyboard_bindings[i], s.controller_bindings[i] = o.controller_bindings[i];
+    return s;
+}
+
+// The overlay applies on the presenting thread; window changes belong to the window thread, so they go there.
+constexpr UINT kOverlayApplyMessage = WM_APP + 60;
+struct OverlayApply {
+    PcMenuState state;
+    bool persist;
+};
+
+static void overlay_apply(const overlay::Settings& s, bool persist) {
+    auto* a = new OverlayApply{from_overlay(s), persist};
+    if (!g_window || !PostMessageW(g_window, kOverlayApplyMessage, 0, reinterpret_cast<LPARAM>(a))) delete a;
+}
+
+static const char* overlay_key_name(int vk) {
+    thread_local char name[64];
+    UINT scan = MapVirtualKeyW(UINT(vk), MAPVK_VK_TO_VSC);
+    LONG l = LONG(scan) << 16;
+    if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN || vk == VK_INSERT || vk == VK_DELETE ||
+        vk == VK_HOME || vk == VK_END || vk == VK_PRIOR || vk == VK_NEXT || vk == VK_RCONTROL || vk == VK_RMENU)
+        l |= 1 << 24;  // extended keys
+    if (GetKeyNameTextA(l, name, sizeof name) > 0) return name;
+    std::snprintf(name, sizeof name, "VK %d", vk);
+    return name;
+}
+
+static overlay::Key overlay_key(WPARAM vk) {
+    switch (vk) {
+        case VK_TAB: return overlay::KeyTab;
+        case VK_LEFT: return overlay::KeyLeft;
+        case VK_RIGHT: return overlay::KeyRight;
+        case VK_UP: return overlay::KeyUp;
+        case VK_DOWN: return overlay::KeyDown;
+        case VK_PRIOR: return overlay::KeyPageUp;
+        case VK_NEXT: return overlay::KeyPageDown;
+        case VK_HOME: return overlay::KeyHome;
+        case VK_END: return overlay::KeyEnd;
+        case VK_RETURN: return overlay::KeyEnter;
+        case VK_ESCAPE: return overlay::KeyEscape;
+        case VK_BACK: return overlay::KeyBackspace;
+        case VK_DELETE: return overlay::KeyDelete;
+        case VK_SPACE: return overlay::KeySpace;
+        case VK_SHIFT: return overlay::KeyShift;
+        case VK_CONTROL: return overlay::KeyCtrl;
+        default: return overlay::KeyNone;
+    }
+}
+
 static bool metrics_has_content() {
     return g_metrics_enabled.load(std::memory_order_relaxed) &&
            (g_metric_fps.load(std::memory_order_relaxed) || g_metric_one_percent_low.load(std::memory_order_relaxed) ||
@@ -230,7 +309,7 @@ static bool metrics_has_content() {
 }
 
 static void apply_metrics_settings(const PcMenuState& state) {
-    g_metrics_enabled.store(state.metrics_enabled, std::memory_order_relaxed);
+    g_metrics_enabled.store(state.metrics_enabled && !overlay::enabled(), std::memory_order_relaxed);
     g_metric_fps.store(state.metric_fps, std::memory_order_relaxed);
     g_metric_one_percent_low.store(state.metric_one_percent_low, std::memory_order_relaxed);
     g_metric_game_speed.store(state.metric_game_speed, std::memory_order_relaxed);
@@ -560,10 +639,40 @@ static void toggle_fullscreen(HWND h) {
     g_pc_settings.fullscreen = g_fullscreen;
     if (!g_fullscreen) resize_window_client(h, g_pc_settings.width, g_pc_settings.height);
     pc_menu_sync(g_pc_settings);
+    if (overlay::enabled()) overlay::sync(to_overlay(g_pc_settings));
     save_pc_settings();
 }
 
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
+    if (msg == kOverlayApplyMessage) {
+        std::unique_ptr<OverlayApply> a(reinterpret_cast<OverlayApply*>(l));
+        apply_pc_menu(a->state, a->persist);
+        return 0;
+    }
+    if (overlay::enabled() && overlay::is_open()) {
+        switch (msg) {
+            case WM_KEYDOWN:
+            case WM_KEYUP:
+                if (w == VK_F1 || w == VK_F11) break;  // handled below
+                if (msg == WM_KEYUP || !(l & (1ll << 30))) overlay::key_event(int(w), overlay_key(w), msg == WM_KEYDOWN);
+                return 0;
+            case WM_CHAR:
+                overlay::text_input(uint32_t(w));
+                return 0;
+            case WM_MOUSEMOVE:
+                overlay::mouse_move(float(GET_X_LPARAM(l)), float(GET_Y_LPARAM(l)));
+                return 0;
+            case WM_LBUTTONDOWN: case WM_LBUTTONUP:
+                overlay::mouse_button(0, msg == WM_LBUTTONDOWN);
+                return 0;
+            case WM_RBUTTONDOWN: case WM_RBUTTONUP:
+                overlay::mouse_button(1, msg == WM_RBUTTONDOWN);
+                return 0;
+            case WM_MOUSEWHEEL:
+                overlay::mouse_wheel(float(GET_WHEEL_DELTA_WPARAM(w)) / float(WHEEL_DELTA));
+                return 0;
+        }
+    }
     switch (msg) {
         case WM_MOVE:
         case WM_SIZE:
@@ -622,7 +731,10 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
             ExitProcess(0);
         case WM_KEYDOWN:
             if (w == VK_F1 && !(l & (1ll << 30))) {
-                pc_menu_toggle();
+                if (overlay::enabled())
+                    overlay::toggle();
+                else
+                    pc_menu_toggle();
                 return 0;
             }
             if (w == VK_F11) toggle_fullscreen(h);
@@ -673,6 +785,12 @@ static void window_thread(std::atomic<bool>* ready) {
     if (g_pc_settings.always_on_top)
         SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     pc_menu_init(g_window, g_pc_settings, apply_pc_menu);
+    if (overlay::enabled()) {
+        overlay::Host host;
+        host.apply = overlay_apply;
+        host.key_name = overlay_key_name;
+        overlay::init(host, to_overlay(g_pc_settings));
+    }
     metrics_init(g_window);
     apply_metrics_settings(g_pc_settings);
     if (!headless()) SetForegroundWindow(g_window);
@@ -704,9 +822,11 @@ void shader_compile_progress(uint64_t compiled, uint64_t total, bool visible) {
 
 void overlay_game_interval(int interval) {
     g_game_present_interval.store(std::max(1, interval), std::memory_order_relaxed);
+    overlay::game_interval(interval);
 }
 
 void overlay_presented(uint64_t now_ns) {
+    overlay::presented(now_ns);
     {
         std::lock_guard lock(g_metrics_mutex);
         if (g_previous_present_ns && now_ns > g_previous_present_ns) {
@@ -827,8 +947,14 @@ void read_pad(PadState& p) {
         }
     }
 
-    const bool menu_open = pc_menu_open();
-    if (menu_open) {
+    PadState nav{};  // the controller through its bindings, for the overlay's navigation
+    nav.lx = p.lx, nav.ly = p.ly, nav.rx = p.rx, nav.ry = p.ry;
+    for (size_t action = 0; action < kPcControlCount; ++action) {
+        const int source = g_controller_bindings[action].load(std::memory_order_relaxed);
+        if (source >= 0 && source < int(physical.size()) && physical[size_t(source)]) nav.buttons |= kPadActionBits[action];
+    }
+    const bool menu_open = pc_menu_open() || (overlay::enabled() && overlay::is_open());
+    if (pc_menu_open()) {
         for (size_t i = 0; i < physical.size(); ++i)
             if (physical[i] && !g_previous_controller_state[i]) pc_menu_capture_controller_button(int(i));
     } else {
@@ -854,6 +980,13 @@ void read_pad(PadState& p) {
     g_previous_controller_state = physical;
     if (menu_open) p = {};
     input_script(p);  // NX_INPUT_SCRIPT (input_script.cpp): unattended runs
+    if (overlay::enabled()) {
+        PadState view = nav;
+        view.buttons |= p.buttons;
+        const bool had = view.buttons != 0;
+        overlay::filter_pad(view);  // Minus + Plus toggles; while open the menu takes the pad
+        if (overlay::is_open() || (had && view.buttons == 0)) p = {};
+    }
 }
 
 // ---- audio: XAudio2 -------------------------------------------------------------------------------------------

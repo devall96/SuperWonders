@@ -2,6 +2,7 @@
 
 | Project | Version | License | Use |
 |---|---|---|---|
+| [Dear ImGui](https://github.com/ocornut/imgui) by Omar Cornut | 1.91.9b | MIT | The in-game overlay menu and metrics panel (`runtime/src/overlay/`), drawn through its Vulkan backend. Vendored unmodified under `third_party/imgui` (core files and `backends/imgui_impl_vulkan`); its license is `third_party/imgui/LICENSE.txt`. |
 | [SDL](https://github.com/libsdl-org/SDL) | 3.4.18 | zlib | Statically linked on Windows for HIDAPI gamepad input, including DualSense support. The source archive is bundled for offline compilation; its license is under `tools/portable/licenses/SDL-LICENSE.txt`. |
 | [Orange Flower](https://openclipart.org/detail/192976/orange-flower) by Scout | Openclipart | Public domain / CC0 1.0 | Adapted from the supplied SVG and used as the Windows application icon. Openclipart states its clipart is dedicated to the public domain under CC0 1.0. |
 | [LLVM-MinGW](https://github.com/mstorsjo/llvm-mingw) | 20261104 (LLVM 23.1.5) | Apache-2.0 with LLVM exception; mingw-w64 components have permissive licenses | Portable Windows C/C++ compiler and target sysroot. Its license is included under `tools/portable/licenses/LLVM-MinGW-LICENSE.txt`. |
