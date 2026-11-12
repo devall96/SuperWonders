@@ -101,6 +101,8 @@ bool resize_shared_memory(const std::vector<uint32_t>& in, uint32_t bytes, std::
 bool default_unwritten_inputs(const std::vector<uint32_t>& in, uint32_t locations, std::vector<uint32_t>& out);
 // The fragment input locations `vs` does not write (0 without both stages).
 uint32_t unwritten_inputs(const ShaderInfo* vs, const ShaderInfo* fs);
+// Function-local variables without an initializer start at 0 (nvn_spirv_locals.cpp), as on Maxwell/NVIDIA.
+bool zero_function_locals(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
 // The code of a stage's module: its SPIR-V with every patch above that applies (`kinds` as patch_int_inputs, or
 // null; `unwritten` as default_unwritten_inputs). `int_inputs` gets whether patch_int_inputs changed it.
 std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, bool* int_inputs);
