@@ -1,5 +1,6 @@
 // The settings menu's tabs (Video, Audio, Controls, Overlay, System), at parity with the Win32 menu
-// (pc_menu_win.cpp), whose four languages and strings it carries over.
+// (pc_menu_win.cpp), whose four languages and strings it carries over. Each option has a description, shown at the
+// bottom while the option is hovered or has the keyboard/controller focus (English for now).
 #include <algorithm>
 #include <cstdio>
 
@@ -77,6 +78,39 @@ constexpr const char* kPhysical[kControlCount] = {
 };
 constexpr int kTabs = 5;
 
+// What the focused or hovered option does (set after each widget by describe(), shown in the footer).
+const char* g_description = nullptr;
+
+void describe(const char* text) {
+    if (ImGui::IsItemHovered() || ImGui::IsItemFocused()) g_description = text;
+}
+
+namespace desc {
+constexpr const char* language = "Language of this menu.";
+constexpr const char* window_size = "Size of the game window in pixels. Not available in fullscreen.";
+constexpr const char* internal = "The resolution the game renders at. Original lets the game choose (it lowers it under "
+                                 "load); higher is sharper and costs more GPU time. Applies after restarting the game.";
+constexpr const char* fullscreen = "Fill the whole screen. F11 also switches it.";
+constexpr const char* topmost = "Keep the game window above other windows. Not available on Wayland.";
+constexpr const char* volume = "The game's volume.";
+constexpr const char* mute = "Silence the game without changing its volume.";
+constexpr const char* game_language = "The language of the game's text. Applies after restarting the game.";
+constexpr const char* preset = "Which controller button is A. Xbox / DualSense: A at the bottom. Nintendo: A on the "
+                               "right, as on a Switch controller.";
+constexpr const char* key = "Select, then press the key for this action. Esc cancels.";
+constexpr const char* pad = "The controller button for this action. Choosing the layout's default clears the change.";
+constexpr const char* metrics = "A performance panel in a corner of the screen.";
+constexpr const char* fps = "Frames per second over the last 60 frames.";
+constexpr const char* low = "The frame rate of the slowest 1% of the last 300 frames: it shows stutter.";
+constexpr const char* speed = "How fast the game runs against its own target: 100% is full speed.";
+constexpr const char* graph = "The time of each of the last 300 frames, 0 to 50 ms.";
+constexpr const char* position = "The corner the panel sits in.";
+constexpr const char* memory = "The game closes itself if its memory use passes this, so a leak can never freeze the "
+                               "computer.";
+constexpr const char* low_vram = "For graphics cards with little video memory: decoded textures are kept compressed "
+                                 "(BC3), at a small cost in quality. Applies after restarting the game.";
+}  // namespace desc
+
 // A combo over `names`; true when the choice changed.
 bool combo(const char* label, int& value, const char* const* names, int count) {
     bool changed = false;
@@ -108,20 +142,27 @@ void video(MenuContext& c, const Labels& l) {
     ImGui::BeginDisabled(!c.host.can_resize || s.fullscreen);
     if (combo(l.window_size, size, sizes, 4)) s.width = kSizes[size][0], s.height = kSizes[size][1], settings_changed(true);
     ImGui::EndDisabled();
+    describe(desc::window_size);
     if (combo(l.internal_resolution, s.internal_resolution, kInternal[lang], 5)) settings_changed(true);
+    describe(desc::internal);
     note(l.restart_note);
     if (ImGui::Checkbox(l.fullscreen, &s.fullscreen)) settings_changed(true);
+    describe(desc::fullscreen);
     ImGui::BeginDisabled(!c.host.can_always_on_top);
     if (ImGui::Checkbox(l.topmost, &s.always_on_top)) settings_changed(true);
     ImGui::EndDisabled();
+    describe(desc::topmost);
 }
 
 void audio(MenuContext& c, const Labels& l) {
     Settings& s = c.settings;
     if (ImGui::SliderInt(l.volume, &s.volume, 0, 100, "%d%%")) settings_changed(false);
     if (ImGui::IsItemDeactivatedAfterEdit()) settings_changed(true);
+    describe(desc::volume);
     if (ImGui::Checkbox(l.mute, &s.muted)) settings_changed(true);
+    describe(desc::mute);
     if (combo(l.game_language, s.game_language, kLanguageNames, 4)) settings_changed(true);
+    describe(desc::game_language);
     note(l.game_language_restart);
 }
 
@@ -130,6 +171,7 @@ void controls(MenuContext& c, const Labels& l) {
     int lang = std::clamp(s.language, 0, 3);
     const char* presets[] = {"Xbox / DualSense", "Nintendo"};
     if (combo(l.control_preset, s.controller_preset, presets, 2)) settings_changed(true);
+    describe(desc::preset);
     note(s.controller_preset == 1 ? l.nintendo_desc : l.standard_desc);
     ImGuiTableFlags tf = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp;
     if (!ImGui::BeginTable("bindings", 3, tf)) return;
@@ -150,6 +192,7 @@ void controls(MenuContext& c, const Labels& l) {
         else
             std::snprintf(key, sizeof key, "%s##k", c.host.key_name ? c.host.key_name(s.keyboard_bindings[a]) : "?");
         if (ImGui::Button(key, {-1, 0})) c.capture_action = int(a);  // overlay.cpp takes the next key
+        describe(desc::key);
         ImGui::TableNextColumn();
         int phys = controller_binding(s, a);
         ImGui::SetNextItemWidth(-1);
@@ -159,6 +202,7 @@ void controls(MenuContext& c, const Labels& l) {
             if (phys == default_controller_binding(a, s.controller_preset)) s.controller_custom_mask &= ~(1u << a);
             settings_changed(true);
         }
+        describe(desc::pad);
         ImGui::PopID();
     }
     ImGui::EndTable();
@@ -169,14 +213,20 @@ void overlay_tab(MenuContext& c) {
     int lang = std::clamp(s.language, 0, 3);
     const auto& o = kOverlayLabels[lang];
     if (ImGui::Checkbox(o[0], &s.metrics_enabled)) settings_changed(true);
+    describe(desc::metrics);
     ImGui::BeginDisabled(!s.metrics_enabled);
     ImGui::Indent();
     if (ImGui::Checkbox(o[1], &s.metric_fps)) settings_changed(true);
+    describe(desc::fps);
     if (ImGui::Checkbox(o[2], &s.metric_one_percent_low)) settings_changed(true);
+    describe(desc::low);
     if (ImGui::Checkbox(o[3], &s.metric_game_speed)) settings_changed(true);
+    describe(desc::speed);
     if (ImGui::Checkbox(o[4], &s.metric_frametime_graph)) settings_changed(true);
+    describe(desc::graph);
     ImGui::Unindent();
     if (combo(o[5], s.overlay_position, kPositions[lang], 4)) settings_changed(true);
+    describe(desc::position);
     ImGui::EndDisabled();
 }
 
@@ -184,7 +234,9 @@ void system_tab(MenuContext& c, const Labels& l) {
     Settings& s = c.settings;
     if (ImGui::SliderInt(l.memory_limit, &s.memory_limit_gb, 2, 32, "%d GB")) settings_changed(false);
     if (ImGui::IsItemDeactivatedAfterEdit()) settings_changed(true);
+    describe(desc::memory);
     if (ImGui::Checkbox(l.low_vram, &s.low_vram_profile)) settings_changed(true);
+    describe(desc::low_vram);
     note(l.restart_low_vram);
 }
 
@@ -212,18 +264,31 @@ void draw_menu(MenuContext& c) {
     const float lang_w = 160 * c.scale;
     ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - lang_w);
     ImGui::SetNextItemWidth(lang_w);
+    g_description = nullptr;
     if (combo("##language", s.language, kLanguageNames, 4)) settings_changed(true);
-    ImGui::TextDisabled("%s   (L / R: tabs)", l.close);
+    describe(desc::language);
+    ImGui::TextDisabled("%s", l.close);
     ImGui::Separator();
+    // The footer (description and controller hints) keeps the bottom lines of the window.
+    const float footer = ImGui::GetTextLineHeightWithSpacing() * 4.2f;
 
     const char* names[kTabs] = {l.video, l.audio, l.controls, l.overlay, l.system};
     int current = -1;
+    // Tabs follow the keyboard / controller focus: moving onto a tab with the arrows or the D-pad shows it (next
+    // frame), with no Enter or A needed. The mouse still selects by clicking.
+    // Only a change of focus moves the tab: L / R select a tab without moving the focus, which must not pull it back.
+    static int follow = -1, focused_before = -1;
+    int follow_next = -1, focused = -1;
     if (ImGui::BeginTabBar("tabs", ImGuiTabBarFlags_NoTooltip)) {
         for (int t = 0; t < kTabs; ++t) {
-            ImGuiTabItemFlags tf = c.tab_request == t ? ImGuiTabItemFlags_SetSelected : 0;
-            if (ImGui::BeginTabItem(names[t], nullptr, tf)) {
+            ImGuiTabItemFlags tf = c.tab_request == t || follow == t ? ImGuiTabItemFlags_SetSelected : 0;
+            const bool shown = ImGui::BeginTabItem(names[t], nullptr, tf);
+            if (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible) focused = t;
+            if (!shown && focused == t && focused_before != t) follow_next = t;
+            if (shown && c.appearing) ImGui::SetItemDefaultFocus();  // navigation starts on the open tab
+            if (shown) {
                 current = t;
-                ImGui::BeginChild("page", {0, 0}, ImGuiChildFlags_NavFlattened);
+                ImGui::BeginChild("page", {0, -footer}, ImGuiChildFlags_NavFlattened);
                 ImGui::PushItemWidth(-ImGui::GetContentRegionAvail().x * 0.45f);
                 switch (t) {
                     case 0: video(c, l); break;
@@ -239,7 +304,15 @@ void draw_menu(MenuContext& c) {
         }
         ImGui::EndTabBar();
     }
+    follow = follow_next;
+    focused_before = focused;
     c.tab_request = current;  // out: the tab shown, for the shoulder buttons
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.85f, 0.90f, 0.97f, 1.0f});
+    ImGui::TextWrapped("%s", g_description ? g_description : "");
+    ImGui::PopStyleColor();
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - ImGui::GetTextLineHeight());
+    ImGui::TextDisabled("A: select     B: back     L / R: tab     D-pad: move     Minus + Plus: close");
     ImGui::End();
 }
 
