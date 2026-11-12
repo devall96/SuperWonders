@@ -175,6 +175,8 @@ void yield() {
     else
         thread_switch(MACH_PORT_NULL, SWITCH_OPTION_NONE, 0);
 }
+bool wait_vblank() { return false; }
+bool fast_forward() { return false; }
 void set_thread_name(const char* name) { pthread_setname_np(name); }  // Darwin: the calling thread only
 
 int64_t current_thread_id() {
