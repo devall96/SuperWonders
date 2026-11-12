@@ -50,6 +50,8 @@ struct PcMenuState {
     bool metric_game_speed = true;
     bool metric_frametime_graph = true;
     int overlay_position = 0;  // top left, top right, bottom left, bottom right
+    int upscaler = 1;          // overlay menu: 0 bilinear, 1 FSR 1
+    int fsr_sharpness = 25;    // overlay menu: RCAS stops x 100
     std::array<int, kPcControlCount> keyboard_bindings = {
         VK_SPACE, VK_SHIFT, 'J', 'K', 'Q', 'E', 'Z', 'C', VK_RETURN, VK_ESCAPE, 'M', 'N',
         VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN,
