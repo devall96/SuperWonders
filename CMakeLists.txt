@@ -153,6 +153,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/nvn/nvn_spirv_patch.cpp
     runtime/src/nvn/nvn_spirv_int_textures.cpp
     runtime/src/nvn/nvn_spirv_locals.cpp
+    runtime/src/nvn/nvn_spirv_unused.cpp
     runtime/src/nvn/nvn_pipeline_async.cpp
     runtime/src/nvn/nvn_spirv_clip.cpp
     runtime/src/nvn/nvn_present.cpp
