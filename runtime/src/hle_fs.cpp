@@ -1,7 +1,8 @@
 // nn::fs at the API level, on host files. The game imports these by name (main), so no fsp-srv IPC is involved:
-//   rom:   -> private/extract/romfs (the RomFS with the update applied)
+//   rom:   -> private/extract/romfs (the RomFS with the update applied), under mods/<name>/romfs (mod_roots)
 //   save:  -> private/user/save/<mount>
 //   cache: -> private/user/cache<index>
+#include <algorithm>
 #include <cctype>
 #include <algorithm>
 #include <cstdio>
@@ -9,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -93,14 +95,66 @@ std::string utf8(const fs::path& p) {
 
 std::string cstr(uint64_t p) { return p ? std::string(reinterpret_cast<const char*>(p)) : std::string(); }
 
-// "mount:/a/b" -> host path; empty when the mount is unknown.
-fs::path resolve(const std::string& guest) {
+std::set<std::string> g_rom_mounts;
+
+// Mods: <data root>/mods/<name>/, each with a romfs folder in its first levels (romfs/, or the layouts Switch mods
+// ship in: contents/<title id>/romfs/, atmosphere/contents/<title id>/romfs/). Their files go over the game's
+// RomFS; folders in name order, the first with a file wins; a folder whose name starts with '-' is off.
+const std::vector<fs::path>& mod_roots() {
+    static const std::vector<fs::path> roots = [] {
+        std::vector<fs::path> mods, out;
+        std::error_code ec;
+        for (auto& e : fs::directory_iterator(data_root() / "mods", ec))
+            if (e.is_directory() && utf8(e.path().filename()).rfind('-', 0) != 0) mods.push_back(e.path());
+        std::sort(mods.begin(), mods.end());
+        for (const fs::path& m : mods) {
+            fs::path found;
+            for (auto it = fs::recursive_directory_iterator(m, ec); it != fs::recursive_directory_iterator();
+                 it.increment(ec)) {
+                if (it.depth() >= 3) it.disable_recursion_pending();
+                if (it->is_directory() && virtual_key(it->path().filename()) == "romfs") {
+                    found = it->path();
+                    break;
+                }
+            }
+            log("mods: %s%s", utf8(m.filename()).c_str(), found.empty() ? ": no romfs folder, skipped" : "");
+            if (!found.empty()) out.push_back(found);
+        }
+        return out;
+    }();
+    return roots;
+}
+
+// "mount:/a/b" -> {"mount", "a/b"}; both empty without a colon.
+std::pair<std::string, std::string> split(const std::string& guest) {
     auto colon = guest.find(':');
     if (colon == std::string::npos) return {};
-    auto it = g_mounts.find(guest.substr(0, colon));
-    if (it == g_mounts.end()) return {};
     std::string rest = guest.substr(colon + 1);
     while (!rest.empty() && (rest[0] == '/' || rest[0] == '\\')) rest.erase(0, 1);
+    return {guest.substr(0, colon), rest};
+}
+
+// The mods' copies of a RomFS path (existing or not), first mod first; none outside the RomFS.
+std::vector<fs::path> mod_paths(const std::string& guest) {
+    std::vector<fs::path> v;
+    auto [mnt, rest] = split(guest);
+    if (g_rom_mounts.count(mnt))
+        for (const fs::path& r : mod_roots()) v.push_back(r / fs::u8path(rest));
+    return v;
+}
+
+// "mount:/a/b" -> host path, a mod's file before the RomFS's; empty when the mount is unknown.
+fs::path resolve(const std::string& guest) {
+    auto [mnt, rest] = split(guest);
+    auto it = g_mounts.find(mnt);
+    if (it == g_mounts.end()) return {};
+    std::error_code ec;
+    for (const fs::path& m : mod_paths(guest))
+        if (fs::is_regular_file(m, ec)) {
+            static std::set<std::string> logged;  // each modded file once
+            if (logged.insert(rest).second) log("mods: %s from %s", rest.c_str(), utf8(m).c_str());
+            return m;
+        }
     return it->second / fs::u8path(rest);
 }
 
@@ -120,6 +174,7 @@ void QueryMountRomCacheSize(CPU& c) {
 void MountRom(CPU& c) {
     std::lock_guard lk(g_fs);
     mount(cstr(c.x[0]), data_root() / "extract" / "romfs");
+    g_rom_mounts.insert(cstr(c.x[0]));
     c.x[0] = kOk;
 }
 
@@ -338,15 +393,22 @@ void OpenDirectory(CPU& c) {  // (DirectoryHandle* out, path, int mode: 1 dirs, 
     fs::path p = resolve(cstr(c.x[1]));
     int mode = int(c.x[2]);
     std::error_code ec;
-    if (p.empty() || !fs::is_directory(p, ec)) {
+    std::vector<fs::path> dirs;  // the folder and the mods' copies of it: their new files are listed too, once each
+    if (!p.empty() && fs::is_directory(p, ec)) dirs.push_back(p);
+    for (const fs::path& m : mod_paths(cstr(c.x[1])))
+        if (fs::is_directory(m, ec)) dirs.push_back(m);
+    if (p.empty() || dirs.empty()) {
         c.x[0] = kPathNotFound;
         return;
     }
     Dir d;
-    for (auto& e : fs::directory_iterator(p, ec)) {
-        bool dir = e.is_directory();
-        if ((dir && (mode & 1)) || (!dir && (mode & 2))) d.entries.push_back(e);
-    }
+    std::set<std::string> seen;
+    for (const fs::path& dp : dirs)
+        for (auto& e : fs::directory_iterator(dp, ec)) {
+            bool dir = e.is_directory();
+            if (((dir && (mode & 1)) || (!dir && (mode & 2))) && seen.insert(virtual_key(e.path().filename())).second)
+                d.entries.push_back(e);
+        }
     uint64_t h = g_next++;
     g_dirs.emplace_back(h, std::move(d));
     st<uint64_t>(c.x[0], h);
