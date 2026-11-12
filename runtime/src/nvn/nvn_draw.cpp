@@ -403,7 +403,17 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     }
     GpuImage* dimg = tt.depth ? image_of(tt.depth) : nullptr;
     key.depth_format = dimg && dimg->aspect != VK_IMAGE_ASPECT_COLOR_BIT ? dimg->format : VK_FORMAT_UNDEFINED;
-    VkPipeline pipeline = graphics_pipeline(key, layout);
+    // A pipeline not compiled yet may be compiled on a worker while this draw is skipped, when the next frame draws it
+    // again: every target of the pass was also rendered in the previous frame (or this one). A target rendered for
+    // the first time, or once now and then (a light probe, a capture), waits for its pipeline (nvn_pipeline_async.h).
+    bool may_skip = t.color_count || dimg;
+    const uint64_t frame = g_frame.load(std::memory_order_relaxed) + 1;
+    for (uint32_t k = 0; k < t.color_count && may_skip; k++) {
+        GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
+        may_skip = img && img->rendered_frame && img->rendered_frame + 1 >= frame;
+    }
+    if (may_skip && dimg) may_skip = dimg->rendered_frame && dimg->rendered_frame + 1 >= frame;
+    VkPipeline pipeline = graphics_pipeline(key, layout, may_skip);
     if (!pipeline) {
         g_stats.no_pipeline++;
         return false;
@@ -588,8 +598,10 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
     }
     g_pass_serial++;
     for (uint32_t k = 0; k < 9; k++)  // this pass's targets only (the other slots may name freed images)
-        if ((k < g_pass.color_count || (k == 8 && g_pass.depth)) && g_pass_images[k])
+        if ((k < g_pass.color_count || (k == 8 && g_pass.depth)) && g_pass_images[k]) {
             g_pass_images[k]->rendered_at = g_pass_serial;
+            g_pass_images[k]->rendered_frame = g_frame.load(std::memory_order_relaxed) + 1;
+        }
     gpu_profile_mark(cb, "outside passes (clears, uploads, copies)");
 }
 void draw_end_rendering(VkCommandBuffer cb, int reason) {  // and the pending clears (nvn_clears.cpp)
