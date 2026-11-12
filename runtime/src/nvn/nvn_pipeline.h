@@ -161,5 +161,11 @@ VkImageViewType view_type(const ImageShape& shape);  // the view type a shader's
 bool dummy_ready(const ImageShape& shape);
 // A 1x1 black texture of the shape, for bindings with nothing behind them.
 VkImageView dummy_view(VkCommandBuffer cb, const ImageShape& shape);
+// nvn_compare_twin.cpp: a D32 copy of an R32F colour image sampled with a depth-compare sampler, for GPUs without
+// depth comparison on colour formats (AMD). wanted: the image needs one; ready: it is up to date (no copy, so no
+// break of the render pass); view: the twin's view, copied first when stale (outside a render pass).
+bool compare_twin_wanted(const GpuImage& img);
+bool compare_twin_ready(const GpuImage& img);
+VkImageView compare_twin_view(VkCommandBuffer cb, GpuImage& img, VkImageViewType type);
 
 }  // namespace nx::nvn
