@@ -42,6 +42,10 @@ constexpr uint64_t kActionBits[overlay::kControlCount] = {
 };
 
 std::atomic<bool> g_fast_forward{false};  // Tab held (sampled on the main thread)
+// The open gamepad: sampled on the main thread, rumbled from the game's (both under g_gamepad_lock).
+std::mutex g_gamepad_lock;
+SDL_Gamepad* g_gamepad = nullptr;
+std::atomic<int> g_rumble_strength{100};  // percent
 
 std::mutex g_posted_lock;
 std::deque<std::function<void()>> g_posted;
@@ -73,6 +77,7 @@ void apply_settings(const overlay::Settings& s, bool persist) {
     nvn::set_fsr(s.upscaler == 1, float(s.fsr_sharpness) / 100.0f);
     nvn::set_fxaa(s.antialiasing == 1);
     nvn::set_anisotropy(s.anisotropy);
+    g_rumble_strength = std::clamp(s.rumble, 0, 100);
     if (s.fullscreen != before.fullscreen || s.width != before.width || s.height != before.height ||
         s.always_on_top != before.always_on_top)
         post_to_main([s] {
@@ -116,6 +121,15 @@ overlay::Key menu_key(SDL_Keycode k) {
 }  // namespace
 
 bool fast_forward() { return g_fast_forward.load(std::memory_order_relaxed); }
+
+void rumble(float low, float high) {
+    float k = float(g_rumble_strength.load()) / 100.0f;
+    std::lock_guard lk(g_gamepad_lock);
+    if (!g_gamepad) return;
+    // 250 ms at most: the game sends a value every few milliseconds while it vibrates, and zero to stop.
+    SDL_RumbleGamepad(g_gamepad, Uint16(std::clamp(low * k, 0.0f, 1.0f) * 65535.0f),
+                      Uint16(std::clamp(high * k, 0.0f, 1.0f) * 65535.0f), 250);
+}
 
 void read_pad(PadState& p) {
     {
@@ -206,7 +220,8 @@ bool handle_event(const SDL_Event& e) {
 
 void sample_input() {
     PadState p;
-    static SDL_Gamepad* pad = nullptr;
+    std::unique_lock gamepad_lock(g_gamepad_lock);
+    SDL_Gamepad*& pad = g_gamepad;
     if (!pad) {
         int n = 0;
         SDL_JoystickID* ids = SDL_GetGamepads(&n);
@@ -246,6 +261,7 @@ void sample_input() {
         p.rx = axis(SDL_GAMEPAD_AXIS_RIGHTX, false);
         p.ry = axis(SDL_GAMEPAD_AXIS_RIGHTY, true);
     }
+    gamepad_lock.unlock();
     // Keyboard: WASD / arrows move the stick; the 16 actions follow their bindings (defaults: Space A, Shift B, J X,
     // K Y, Q/E L/R, Z/C ZL/ZR, Enter +, Esc -, M/N stick clicks, arrows D-pad). Not while the menu has the keys.
     bool tab = false;
