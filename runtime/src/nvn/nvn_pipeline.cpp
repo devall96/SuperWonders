@@ -197,13 +197,13 @@ VkShaderStageFlags stage_bit(ShaderStage s) {
 // `kinds`: per vertex input location, 0 float or the integer kind of its attribute format (vertex_int_kind).
 // `unwritten`: fragment input locations the vertex stage does not write (default_unwritten_inputs).
 VkShaderModule module_of(const ShaderInfo* s, const uint8_t* kinds = nullptr, uint32_t unwritten = 0) {
-    static std::map<std::tuple<const ShaderInfo*, std::string, uint32_t>, VkShaderModule> cache;
+    static std::map<std::tuple<const ShaderInfo*, std::string, uint32_t, std::string>, VkShaderModule> cache;
     // The integer-vertex-input patch (skinned models' bone indices; without it Metal refuses every character's
     // pipeline, DEBUG.md #25/#26). NX_INT_ATTRIBS=0 turns it off.
     static const char* int_env = std::getenv("NX_INT_ATTRIBS");
     static const bool off = int_env && int_env[0] == '0';
     std::string k = kinds && !off ? std::string(reinterpret_cast<const char*>(kinds), 16) : std::string(16, '\0');
-    auto& m = cache[{s, k, unwritten}];
+    auto& m = cache[{s, k, unwritten, int_texture_key(s)}];  // integer textures (nvn_spirv_int_textures.cpp)
     if (!m) {
         bool is_patched = false;
         const uint8_t* int_kinds = k != std::string(16, '\0') ? reinterpret_cast<const uint8_t*>(k.data()) : nullptr;
@@ -467,7 +467,7 @@ VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout
     if (!key.vs || key.vs->hash.size() != 16 || (key.fs && key.fs->hash.size() != 16)) return VK_NULL_HANDLE;
     // By the key's bytes, as before, but hashed (nvn_pipeline.h) instead of a ~700-byte std::string built and
     // compared down a tree per draw; and the last entry first: consecutive draws mostly share their state.
-    using Key = ByteKey<sizeof(PipelineKey) + 32>;
+    using Key = ByteKey<sizeof(PipelineKey) + 40>;
     static std::unordered_map<Key, VkPipeline, ByteKeyHash> cache;
     static const std::pair<const Key, VkPipeline>* last = nullptr;  // entries are never erased
     Key k{};
@@ -477,6 +477,9 @@ VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout
     std::memcpy(&state_key, &key, sizeof key);
     state_key.vs = state_key.fs = nullptr;
     std::memcpy(k.b + 32, &state_key, sizeof state_key);
+    // A stage that gained an integer texture record has another module (nvn_spirv_int_textures.cpp).
+    const uint32_t generations[2] = {int_texture_generation(key.vs), key.fs ? int_texture_generation(key.fs) : 0u};
+    std::memcpy(k.b + 32 + sizeof state_key, generations, sizeof generations);
     if (last && std::memcmp(k.b, last->first.b, sizeof k.b) == 0) return last->second;
     if (auto it = cache.find(k); it != cache.end()) return (last = &*it)->second;
 
