@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "nvn_vk.h"
+#include "nvn_pipeline.h"
 #include "nvn_shader_prepare.h"
 #include "platform.h"
 
@@ -201,7 +202,7 @@ bool init() {
     g_depth_clip_control = fclip.depthClipControl;
     g_features = features.features;
     // NX_ASTC_DECODE=1|linear|srgb: the CPU decoder even where the GPU has ASTC (to compare the two on one GPU).
-    set_astc_native(g_features.textureCompressionASTC_LDR);
+    set_astc_native(g_features.textureCompressionASTC_LDR, g_features.textureCompressionBC);
     log("nvn/vk: ASTC %s", astc_native() ? "native" : "decoded to RGBA8 at upload (no textureCompressionASTC_LDR)");
     log("nvn/vk: depthClamp %u, depthBiasClamp %u, depthBounds %u, depth clip control %u (extension %u)",
         g_features.depthClamp, g_features.depthBiasClamp, g_features.depthBounds, g_depth_clip_control,
@@ -377,6 +378,14 @@ bool make_swapchain() {
 
 }  // namespace
 
+void flush_pipeline_cache() {
+    std::lock_guard<std::recursive_mutex> lock(g_gpu);
+    if (!g_device) return;
+    // The GPU lock prevents concurrent pipeline creation while Vulkan serializes the cache.
+    pipeline_cache_save(true);
+    save_pipeline_keys(true);
+}
+
 std::recursive_mutex& gpu_lock() { return g_gpu; }
 VkDevice vk_device() { return g_device; }
 VkPhysicalDevice vk_physical() { return g_physical; }
@@ -539,7 +548,11 @@ void gpu_submit(const std::vector<std::shared_ptr<CmdList>>& lists, std::shared_
     for (auto& l : lists) lists_epoch = std::max(lists_epoch, l->epoch);
     ReplayScope replay(lists_epoch);  // the texture mark (#55, #57), then drain_objects (under the GPU lock, #50)
     if (!init()) return;
-    if (!g_shader_prepare_checked) g_shader_prepare_checked = true, prepare_shader_catalog();
+    if (!g_shader_prepare_checked) {
+        g_shader_prepare_checked = true;
+        prepare_shader_catalog();
+        prepare_recorded_pipelines();
+    }
     bool async = async_gpu();
     if (!async) {  // the previous submit was waited for: all of it is free
         free_retired_images(UINT64_MAX);
@@ -613,7 +626,11 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
     PresentTimer timer;
     drain_objects();  // under the GPU lock, as in gpu_submit
     if (!init()) return;
-    if (!g_shader_prepare_checked) g_shader_prepare_checked = true, prepare_shader_catalog();
+    if (!g_shader_prepare_checked) {
+        g_shader_prepare_checked = true;
+        prepare_shader_catalog();
+        prepare_recorded_pipelines();
+    }
     if (!async_gpu() || pipelined()) free_retired_images(async_gpu() ? frame_completed() : UINT64_MAX);
     if (plat::headless()) return present_headless(texture);
     if (plat::window_minimized()) return;

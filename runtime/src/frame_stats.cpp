@@ -17,6 +17,10 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include "platform.h"
 
 #if defined(__ANDROID__)
@@ -32,7 +36,16 @@ namespace nx::plat {
 namespace {
 
 uint64_t thread_cpu_ns() {
-#if defined(CLOCK_THREAD_CPUTIME_ID)
+#if defined(_WIN32)
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) return 0;
+    ULARGE_INTEGER kernel_ticks{}, user_ticks{};
+    kernel_ticks.LowPart = kernel.dwLowDateTime;
+    kernel_ticks.HighPart = kernel.dwHighDateTime;
+    user_ticks.LowPart = user.dwLowDateTime;
+    user_ticks.HighPart = user.dwHighDateTime;
+    return (kernel_ticks.QuadPart + user_ticks.QuadPart) * 100ull;  // FILETIME uses 100 ns ticks
+#elif defined(CLOCK_THREAD_CPUTIME_ID)
     timespec ts{};
     clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
     return uint64_t(ts.tv_sec) * 1'000'000'000ull + uint64_t(ts.tv_nsec);

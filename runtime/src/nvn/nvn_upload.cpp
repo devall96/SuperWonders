@@ -1,6 +1,7 @@
 // Texture uploads (nvn_pipeline.h): guest pool memory into the host image, untiled, widened where the host stores a
 // format wider than NVN does, and checked against what the copies read (docs/nvn/DEBUG.md #50).
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <set>
@@ -86,6 +87,78 @@ void decode_astc(uint32_t format, std::vector<uint8_t>& linear, std::vector<Line
     if (++textures % 200 == 1)
         log("nvn/vk: ASTC decoded on the CPU: %llu textures, %.1f MB, %.0f ms, %llu invalid blocks",
             (unsigned long long)textures, double(bytes) / 1e6, double(ns) / 1e6, (unsigned long long)invalid);
+}
+
+static uint16_t pack_565(uint8_t r, uint8_t g, uint8_t b) {
+    return uint16_t((r >> 3) << 11 | (g >> 2) << 5 | (b >> 3));
+}
+
+// A compact, deterministic BC3 encoder used only by the opt-in low-VRAM profile. It chooses block endpoint
+// extrema and nearest palette entries; quality is lower than a high-quality offline encoder but storage is 1 B/px.
+static void encode_bc3_block(const uint8_t* rgba, uint32_t stride, uint32_t width, uint32_t height, uint32_t x0,
+                             uint32_t y0, uint8_t* out) {
+    uint8_t pixels[16][4];
+    for (uint32_t y = 0; y < 4; ++y) for (uint32_t x = 0; x < 4; ++x) {
+        const uint32_t sx = std::min(x0 + x, width - 1), sy = std::min(y0 + y, height - 1);
+        std::memcpy(pixels[y * 4 + x], rgba + uint64_t(sy) * stride + uint64_t(sx) * 4, 4);
+    }
+    uint8_t amin = 255, amax = 0;
+    for (const auto& p : pixels) amin = std::min(amin, p[3]), amax = std::max(amax, p[3]);
+    out[0] = amax; out[1] = amin;
+    uint8_t ap[8] = {amax, amin};
+    for (int i = 1; i <= 6; ++i) ap[i + 1] = uint8_t(((6 - i) * amax + (i - 1) * amin) / 5);
+    uint64_t ai = 0;
+    for (int i = 0; i < 16; ++i) {
+        int best = 0, error = 1 << 30;
+        for (int j = 0; j < 8; ++j) { int d = int(pixels[i][3]) - ap[j]; if (d * d < error) error = d * d, best = j; }
+        ai |= uint64_t(best) << (3 * i);
+    }
+    for (int i = 0; i < 6; ++i) out[2 + i] = uint8_t(ai >> (8 * i));
+
+    int lo = 0, hi = 0;
+    auto lum = [&](int i) { return 299 * int(pixels[i][0]) + 587 * int(pixels[i][1]) + 114 * int(pixels[i][2]); };
+    for (int i = 1; i < 16; ++i) { if (lum(i) < lum(lo)) lo = i; if (lum(i) > lum(hi)) hi = i; }
+    uint16_t c0 = pack_565(pixels[hi][0], pixels[hi][1], pixels[hi][2]);
+    uint16_t c1 = pack_565(pixels[lo][0], pixels[lo][1], pixels[lo][2]);
+    if (c0 <= c1) { if (c0 < 0xffff) c0 = c1 + 1; else c1 = c0 - 1; }
+    std::memcpy(out + 8, &c0, 2); std::memcpy(out + 10, &c1, 2);
+    auto color = [](uint16_t c) {
+        return std::array<int, 3>{int((c >> 11) & 31) * 255 / 31, int((c >> 5) & 63) * 255 / 63, int(c & 31) * 255 / 31};
+    };
+    const auto a = color(c0), b = color(c1);
+    int palette[4][3];
+    for (int ch = 0; ch < 3; ++ch) palette[0][ch] = a[ch], palette[1][ch] = b[ch],
+        palette[2][ch] = (2 * a[ch] + b[ch]) / 3, palette[3][ch] = (a[ch] + 2 * b[ch]) / 3;
+    uint32_t ci = 0;
+    for (int i = 0; i < 16; ++i) {
+        int best = 0, error = 1 << 30;
+        for (int j = 0; j < 4; ++j) { int d = 0; for (int ch = 0; ch < 3; ++ch) { int q = int(pixels[i][ch]) - palette[j][ch]; d += q * q; }
+            if (d < error) error = d, best = j; }
+        ci |= uint32_t(best) << (2 * i);
+    }
+    std::memcpy(out + 12, &ci, 4);
+}
+
+static void transcode_astc_to_bc3(std::vector<uint8_t>& rgba, std::vector<LinearLevel>& levels, uint32_t layers) {
+    std::vector<LinearLevel> out = levels;
+    uint64_t total = 0;
+    for (LinearLevel& l : out) {
+        l.width_blocks = (l.width + 3) / 4; l.height_blocks = (l.height + 3) / 4;
+        l.layer_size = uint64_t(l.width_blocks) * l.height_blocks * 16;
+        l.offset = total; total += (l.layer_size * layers + 15) & ~15ull;
+    }
+    std::vector<uint8_t> compressed(total);
+    for (size_t level = 0; level < levels.size(); ++level) {
+        const auto& src = levels[level]; auto& dst = out[level];
+        for (uint32_t layer = 0; layer < layers; ++layer) {
+            const uint8_t* image = rgba.data() + src.offset + uint64_t(layer) * src.layer_size;
+            uint8_t* blocks = compressed.data() + dst.offset + uint64_t(layer) * dst.layer_size;
+            for (uint32_t y = 0; y < dst.height_blocks; ++y) for (uint32_t x = 0; x < dst.width_blocks; ++x)
+                encode_bc3_block(image, src.width * 4, src.width, src.height, x * 4, y * 4,
+                                 blocks + (uint64_t(y) * dst.width_blocks + x) * 16);
+        }
+    }
+    rgba.swap(compressed); levels.swap(out);
 }
 
 // Whether a 1 MB+ upload gets a staging buffer of its own (PHASE4.md U1). In steady state (a course frame stages ~30
@@ -228,7 +301,15 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img) {
     }
     if (astc_decoded(t.format)) {  // RGBA8 texels from here on
         decode_astc(t.format, linear, levels, layers, bw, bh);
-        bw = bh = 1, bytes = host_bytes = 4;
+        if (img.format == VK_FORMAT_BC3_UNORM_BLOCK || img.format == VK_FORMAT_BC3_SRGB_BLOCK) {
+            transcode_astc_to_bc3(linear, levels, layers);
+            bw = bh = 4, bytes = host_bytes = 16;
+            static uint64_t bc3_textures = 0;
+            if (++bc3_textures == 1 || bc3_textures % 500 == 0)
+                log("nvn/vk: ASTC textures transcoded to BC3 for low-VRAM profile: %llu", (unsigned long long)bc3_textures);
+        } else {
+            bw = bh = 1, bytes = host_bytes = 4;
+        }
     }
     // Widened, every offset in the linear buffer doubles (level offsets are multiples of the 4-byte texel).
     uint64_t scale = widen ? 2 : 1;

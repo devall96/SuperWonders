@@ -11,10 +11,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <thread>
+#include <atomic>
 
 #ifndef NX_MEMGUARD_STANDALONE
 #include <nx/runtime.h>
 
+#include "kernel.h"
+#include "nvn/nvn_vk.h"
 #include "platform.h"
 #endif
 
@@ -35,25 +38,40 @@ double memory_limit_gb(const char* env) {
     return gb > 0 ? gb : 8.0;
 }
 
+static std::atomic<uint64_t> g_limit_bytes{8ull << 30};
+void set_memory_limit_gb(double gb) {
+    if (gb < 2.0) gb = 2.0;
+    if (gb > 32.0) gb = 32.0;
+    g_limit_bytes.store(uint64_t(gb * double(1ull << 30)), std::memory_order_relaxed);
+}
+
 #ifndef NX_MEMGUARD_STANDALONE
 
 void start_memory_guard() {
-    const double gb = memory_limit_gb(std::getenv("NX_MEM_LIMIT_GB"));
-    const uint64_t limit = uint64_t(gb * double(1ull << 30));
+    if (const char* env = std::getenv("NX_MEM_LIMIT_GB")) set_memory_limit_gb(memory_limit_gb(env));
+    const uint64_t limit = g_limit_bytes.load(std::memory_order_relaxed);
+    const double gb = double(limit) / double(1ull << 30);
     log("memory: guard on, limit %.1f GB (NX_MEM_LIMIT_GB)", gb);
     std::thread([limit, gb] {
         uint64_t ticks = 0, peak = 0;
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            const uint64_t current_limit = g_limit_bytes.load(std::memory_order_relaxed);
+            const double current_gb = double(current_limit) / double(1ull << 30);
             uint64_t f = memory_footprint();
             if (f > peak) peak = f;
-            if (++ticks % 120 == 0)
-                log("memory: %.2f GB (peak %.2f GB, limit %.1f GB)", double(f) / double(1ull << 30),
-                    double(peak) / double(1ull << 30), gb);
-            if (f > limit) {
+            if (++ticks % 120 == 0) {
+                const nx::nvn::GpuImageMemoryStats images = nx::nvn::gpu_image_memory_stats();
+                log("memory: %.2f GB (peak %.2f GB, limit %.1f GB); guest heap %.2f GB; Vulkan images %.2f GB "
+                    "(peak %.2f GB, %llu live)",
+                    double(f) / double(1ull << 30), double(peak) / double(1ull << 30), current_gb,
+                    double(nx::heap_size()) / double(1ull << 30), double(images.live_bytes) / double(1ull << 30),
+                    double(images.peak_bytes) / double(1ull << 30), (unsigned long long)images.live_allocations);
+            }
+            if (f > current_limit) {
                 char msg[160];
                 std::snprintf(msg, sizeof msg, "memory: %.2f GB is over the %.1f GB limit (NX_MEM_LIMIT_GB): stopping",
-                              double(f) / double(1ull << 30), gb);
+                              double(f) / double(1ull << 30), current_gb);
                 log("%s", msg);
                 std::fprintf(stderr, "%s\n", msg);
                 std::fflush(nullptr);

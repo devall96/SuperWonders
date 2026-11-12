@@ -30,6 +30,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 if(MSVC)
     add_compile_options(/arch:AVX2)
+elseif(MINGW)
+    add_compile_options(-mavx2)
 endif()
 if(WIN32)
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -207,6 +209,11 @@ else()
         set(SDL_TESTS OFF CACHE BOOL "" FORCE)
         set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
         set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+        set(SDL3_BUNDLED_SOURCE "${CMAKE_SOURCE_DIR}/tools/portable/source/SDL3-3.4.18")
+        if(EXISTS "${SDL3_BUNDLED_SOURCE}/CMakeLists.txt")
+            # FetchContent's explicit source override avoids interpreting a Windows path as a file URL.
+            set(FETCHCONTENT_SOURCE_DIR_SDL3 "${SDL3_BUNDLED_SOURCE}" CACHE PATH "Bundled SDL source" FORCE)
+        endif()
         FetchContent_Declare(SDL3
             URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
             URL_HASH SHA256=9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
@@ -216,7 +223,12 @@ else()
     add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_win.cpp runtime/src/pc_menu_win.cpp
                    runtime/src/memguard_win.cpp)
     target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include")
-    target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk xinput xaudio2 ole32 psapi)
+    if(MINGW)
+        # LLVM-MinGW ships the XAudio2 2.9 import library under its SDK name.
+        target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk xinput xaudio2_9 ole32 psapi)
+    else()
+        target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk xinput xaudio2 ole32 psapi)
+    endif()
     if(WIN32)
         target_link_libraries(${NX_GAME} PRIVATE SDL3::SDL3-static)
         if(NX_GAME STREQUAL "wonder")
@@ -231,5 +243,9 @@ else()
         # Keep host allocations low so the guest ranges (0x40_0000_0000..0x70_0000_0000) are always free; a big
         # main-thread stack (recompiled calls nest deeply); a link map for tools/symbolize.py.
         target_link_options(${NX_GAME} PRIVATE /STACK:67108864 /HIGHENTROPYVA:NO /MAP)
+    elseif(MINGW)
+        # llvm-mingw portable-toolchain equivalents of the MSVC linker options above.
+        target_link_options(${NX_GAME} PRIVATE -Wl,--stack,67108864 -Wl,--disable-high-entropy-va
+                            "-Wl,-Map,$<TARGET_FILE_DIR:${NX_GAME}>/${NX_GAME}.map")
     endif()
 endif()

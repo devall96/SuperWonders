@@ -21,7 +21,7 @@ extern std::vector<KThread*> g_sync_waiters;  // threads in WaitSynchronization:
 extern std::unordered_map<uint32_t, std::shared_ptr<KObject>> g_handles;
 extern uint32_t g_next_handle;
 extern std::atomic<uint64_t> g_next_thread_id;
-extern uint64_t g_heap_size;
+extern std::atomic<uint64_t> g_heap_size;
 
 extern std::vector<KThread*> g_mutex_waiters;  // FIFO
 extern std::vector<KThread*> g_cv_waiters;

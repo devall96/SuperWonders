@@ -13,6 +13,7 @@ namespace nx::nvn {
 struct GpuImage {
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
+    uint64_t allocation_size = 0;  // Vulkan allocation size for VRAM diagnostics
     VkImageView view = VK_NULL_HANDLE;  // every level and layer
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -36,6 +37,15 @@ struct GpuImage {
     uint32_t nvn_format = 0;  // the texture's NVN format
     uint64_t pool = 0, pool_offset = 0, pool_size = 0;  // guest NVN texture storage range (alias diagnostics)
 };
+
+struct GpuImageMemoryStats {
+    uint64_t live_bytes = 0, peak_bytes = 0;
+    uint64_t live_allocations = 0, allocations = 0, frees = 0;
+};
+GpuImageMemoryStats gpu_image_memory_stats();
+void gpu_image_memory_allocated(uint64_t bytes);
+void gpu_image_memory_freed(uint64_t bytes);
+uint64_t trim_reusable_image_cache();
 
 VkDevice vk_device();
 bool vk_depth_clip_control();
@@ -86,7 +96,10 @@ Upload upload_alloc(uint64_t size, uint64_t align);
 Upload staging_alloc(uint64_t size);
 // nvn_pipeline_cache.cpp: the on-disk pipeline cache, and the cost of what the replay creates (logged per window).
 VkPipelineCache pipeline_cache();
-void pipeline_cache_save();
+void pipeline_cache_save(bool force = false);
+void save_pipeline_keys(bool force = false);
+void flush_pipeline_cache();  // safe point for explicit, orderly application shutdown
+void note_pipeline_cache_changed();
 void note_pipeline_created(uint64_t ns);
 void note_astc_decoded(uint64_t ns);
 void creation_log(uint64_t frames);

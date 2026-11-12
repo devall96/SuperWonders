@@ -3,12 +3,14 @@
 //   save:  -> private/user/save/<mount>
 //   cache: -> private/user/cache<index>
 #include <cctype>
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #include <io.h>
@@ -76,7 +78,10 @@ struct Dir {
     std::vector<fs::directory_entry> entries;
     size_t pos = 0;
 };
-std::map<uint64_t, Dir> g_dirs;
+// Keep directory handles in a small vector. The bundled LLVM-MinGW libc++
+// currently fails to compile std::map::erase for this runtime's directory type.
+// Open directory counts are small, so linear lookup is inexpensive here.
+std::vector<std::pair<uint64_t, Dir>> g_dirs;
 uint64_t g_next = 1;
 
 fs::path data_root() { return fs::u8path(plat::data_root()); }
@@ -343,14 +348,14 @@ void OpenDirectory(CPU& c) {  // (DirectoryHandle* out, path, int mode: 1 dirs, 
         if ((dir && (mode & 1)) || (!dir && (mode & 2))) d.entries.push_back(e);
     }
     uint64_t h = g_next++;
-    g_dirs[h] = std::move(d);
+    g_dirs.emplace_back(h, std::move(d));
     st<uint64_t>(c.x[0], h);
     c.x[0] = kOk;
 }
 
 void ReadDirectory(CPU& c) {  // (s64* out_count, DirectoryEntry* entries, DirectoryHandle, s64 max)
     std::lock_guard lk(g_fs);
-    auto it = g_dirs.find(c.x[2]);
+    auto it = std::find_if(g_dirs.begin(), g_dirs.end(), [&](const auto& entry) { return entry.first == c.x[2]; });
     if (it == g_dirs.end()) {
         c.x[0] = kTargetNotFound;
         return;
@@ -374,14 +379,15 @@ void ReadDirectory(CPU& c) {  // (s64* out_count, DirectoryEntry* entries, Direc
 
 void GetDirectoryEntryCount(CPU& c) {  // (s64* out, DirectoryHandle)
     std::lock_guard lk(g_fs);
-    auto it = g_dirs.find(c.x[1]);
+    auto it = std::find_if(g_dirs.begin(), g_dirs.end(), [&](const auto& entry) { return entry.first == c.x[1]; });
     st<int64_t>(c.x[0], it == g_dirs.end() ? 0 : int64_t(it->second.entries.size()));
     c.x[0] = kOk;
 }
 
 void CloseDirectory(CPU& c) {
     std::lock_guard lk(g_fs);
-    g_dirs.erase(c.x[0]);
+    auto it = std::find_if(g_dirs.begin(), g_dirs.end(), [&](const auto& entry) { return entry.first == c.x[0]; });
+    if (it != g_dirs.end()) g_dirs.erase(it);
 }
 
 // ---- cache storage --------------------------------------------------------------------------------------------

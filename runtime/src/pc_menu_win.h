@@ -38,11 +38,13 @@ struct PcMenuState {
     int volume = 100;
     int language = 0;  // English, Italian, German, French
     int game_language = 0;  // Language returned to the game at startup
+    int memory_limit_gb = 8;  // Process private-commit guard; not a dedicated VRAM budget
     int controller_preset = 0;  // Xbox / DualSense, Nintendo
     bool muted = false;
     bool fullscreen = false;
     bool always_on_top = false;
     bool metrics_enabled = false;
+    bool low_vram_profile = false;  // ASTC textures use BC3 instead of expanded RGBA8 where ASTC is unavailable
     bool metric_fps = true;
     bool metric_one_percent_low = true;
     bool metric_game_speed = true;

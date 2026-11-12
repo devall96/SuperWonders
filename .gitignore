@@ -4,6 +4,16 @@ __pycache__/
 *.pyc
 tools/wonder_builder/bin/
 tools/wonder_builder/obj/
+tools/wonder_builder/
+tools/portable/
+tools/build_wonder_windows.py
+tools/package_portable_builder.ps1
+tools/prepare_portable_toolchain.ps1
+tools/build_hactool.py
+tools/PORTABLE-BUILDER.md
+tools/publish_builder_apps.ps1
+README-BUILDER.txt
+Start WonderBuilder.cmd
 
 # Game dumps must never be committed, wherever they are dropped.
 *.xci

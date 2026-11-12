@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -184,6 +185,7 @@ bool warm_compute(const ShaderInfo* cs, const ProgramLayout& layout, VkShaderMod
         log("nvn/vk: startup compute pipeline for %s failed (%d)", cs->hash.c_str(), int(result));
         return false;
     }
+    note_pipeline_cache_changed();
     p_vkDestroyPipeline(vk_device(), pipeline, nullptr);
     return true;
 }
@@ -278,6 +280,7 @@ bool warm_graphics(const ShaderInfo* vs, const ShaderInfo* fs, const ProgramLayo
             fs ? fs->hash.c_str() : "<no fragment>", int(result));
         return false;
     }
+    note_pipeline_cache_changed();
     p_vkDestroyPipeline(vk_device(), pipeline, nullptr);
     return true;
 }

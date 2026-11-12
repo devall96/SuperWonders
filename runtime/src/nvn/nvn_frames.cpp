@@ -100,6 +100,8 @@ bool g_chunking = false;              // this submit is chunked (frame_plan_spli
 uint64_t g_chunk_from = UINT64_MAX;   // the draw count at the last part's start (UINT64_MAX: the next call's)
 std::atomic<uint64_t> g_game_waits{0}, g_game_wait_ns{0};
 uint64_t g_staging_count = 0, g_staging_bytes = 0;  // staging_alloc's buffers, per log period (PHASE4.md U1)  // the game's waits that blocked (NX_ASYNC_GPU only)
+std::atomic<uint64_t> g_image_mem_live{0}, g_image_mem_peak{0}, g_image_mem_live_count{0};
+std::atomic<uint64_t> g_image_mem_allocations{0}, g_image_mem_frees{0};
 
 // The upload ring (the synchronous path's upload buffer). Positions only grow; position p is byte p % size. What
 // lies before g_tail belongs to retired submits; g_begin is where the submit being recorded started.
@@ -133,6 +135,8 @@ ReuseKey reuse_key(const Texture& t) {
 }
 std::map<ReuseKey, std::pair<uint64_t, std::shared_ptr<GpuImage>>> g_reusable;  // key -> (kept at, image)
 uint64_t g_reuse_clock = 0, g_reused = 0;
+uint64_t g_reusable_bytes = 0;
+constexpr uint64_t kReusableImageCacheBudget = 256ull << 20;  // keep at most 256 MiB of released render images
 
 void wait_fences(const VkFence* fences, uint32_t n) {
     if (!n) return;
@@ -295,6 +299,46 @@ VkCommandBuffer next_part(Slot& s) {
 }
 
 }  // namespace
+
+void gpu_image_memory_allocated(uint64_t bytes) {
+    const uint64_t live = g_image_mem_live.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+    g_image_mem_live_count.fetch_add(1, std::memory_order_relaxed);
+    g_image_mem_allocations.fetch_add(1, std::memory_order_relaxed);
+    uint64_t peak = g_image_mem_peak.load(std::memory_order_relaxed);
+    while (live > peak && !g_image_mem_peak.compare_exchange_weak(peak, live, std::memory_order_relaxed)) {}
+}
+
+void gpu_image_memory_freed(uint64_t bytes) {
+    g_image_mem_live.fetch_sub(bytes, std::memory_order_relaxed);
+    g_image_mem_live_count.fetch_sub(1, std::memory_order_relaxed);
+    g_image_mem_frees.fetch_add(1, std::memory_order_relaxed);
+}
+
+GpuImageMemoryStats gpu_image_memory_stats() {
+    return {g_image_mem_live.load(std::memory_order_relaxed), g_image_mem_peak.load(std::memory_order_relaxed),
+            g_image_mem_live_count.load(std::memory_order_relaxed),
+            g_image_mem_allocations.load(std::memory_order_relaxed), g_image_mem_frees.load(std::memory_order_relaxed)};
+}
+
+uint64_t trim_reusable_image_cache() {
+    uint64_t released = 0;
+    size_t count = 0;
+    {
+        std::lock_guard lk(g_grave_lock);
+        for (auto& [key, entry] : g_reusable) {
+            if (!entry.second) continue;
+            released += entry.second->allocation_size;
+            g_grave.push_back({g_submitted + 1, std::move(entry.second)});
+            ++count;
+        }
+        g_reusable.clear();
+        g_reusable_bytes = 0;
+    }
+    if (count)
+        log("nvn/vk: queued %zu released images (%.1f MiB) for safe freeing after an allocation failure", count,
+            double(released) / (1ull << 20));
+    return released;
+}
 
 // On by default on macOS only (course 1-1 headless: ~50 -> ~59 fps there; DEBUG.md #61): MoltenVK encodes Metal inside
 // vkQueueSubmit, which is what the overlap hides. With native drivers (Windows, NVIDIA) the synchronous path played
@@ -584,6 +628,7 @@ void free_retired_images(uint64_t completed) {
         g_reuse_clock++;  // once per submit and present
         for (auto it = g_reusable.begin(); it != g_reusable.end();)
             if (it->second.first + 8 < g_reuse_clock) {
+                if (it->second.second) g_reusable_bytes -= std::min(g_reusable_bytes, it->second.second->allocation_size);
                 g_grave.push_back({g_submitted + 1, std::move(it->second.second)});
                 it = g_reusable.erase(it);
             } else {
@@ -610,8 +655,12 @@ void free_retired_images(uint64_t completed) {
         forget_image_views(*img);
         if (img->view) p_vkDestroyImageView(vk_device(), img->view, nullptr);
         p_vkDestroyImage(vk_device(), img->image, nullptr);
-        if (img->memory) p_vkFreeMemory(vk_device(), img->memory, nullptr);
+        if (img->memory) {
+            p_vkFreeMemory(vk_device(), img->memory, nullptr);
+            gpu_image_memory_freed(img->allocation_size);
+        }
         img->image = VK_NULL_HANDLE, img->memory = VK_NULL_HANDLE, img->view = VK_NULL_HANDLE;
+        img->allocation_size = 0;
     }
 }
 
@@ -624,8 +673,31 @@ Texture::~Texture() {
     std::lock_guard lk(g_grave_lock);
     if (image->rendered && image->image && memory) {
         auto& slot = g_reusable[reuse_key(*this)];
-        if (slot.second) g_grave.push_back({g_submitted + 1, std::move(slot.second)});
+        if (slot.second) {
+            g_reusable_bytes -= std::min(g_reusable_bytes, slot.second->allocation_size);
+            g_grave.push_back({g_submitted + 1, std::move(slot.second)});
+        }
+        const uint64_t image_bytes = image->allocation_size;
         slot = {g_reuse_clock, std::move(image)};
+        g_reusable_bytes += image_bytes;
+        size_t evicted = 0;
+        uint64_t evicted_bytes = 0;
+        while (g_reusable_bytes > kReusableImageCacheBudget && !g_reusable.empty()) {
+            auto oldest = std::min_element(g_reusable.begin(), g_reusable.end(),
+                                           [](const auto& a, const auto& b) { return a.second.first < b.second.first; });
+            if (oldest == g_reusable.end()) break;
+            if (oldest->second.second) {
+                const uint64_t bytes = oldest->second.second->allocation_size;
+                g_reusable_bytes -= std::min(g_reusable_bytes, bytes);
+                evicted_bytes += bytes;
+                g_grave.push_back({g_submitted + 1, std::move(oldest->second.second)});
+            }
+            g_reusable.erase(oldest);
+            ++evicted;
+        }
+        if (evicted && std::getenv("NX_TRACE_VRAM"))
+            log("nvn/vk: bounded released-image cache to 256 MiB; queued %zu older images (%.1f MiB) for safe freeing",
+                evicted, double(evicted_bytes) / (1ull << 20));
         return;
     }
     g_grave.push_back({g_submitted + 1, std::move(image)});
@@ -676,6 +748,7 @@ std::shared_ptr<GpuImage> reuse_image(const Texture& t) {
     auto it = g_reusable.find(reuse_key(t));
     if (it == g_reusable.end()) return nullptr;
     std::shared_ptr<GpuImage> img = std::move(it->second.second);
+    if (img) g_reusable_bytes -= std::min(g_reusable_bytes, img->allocation_size);
     g_reusable.erase(it);
     g_reused++;
     return img;

@@ -25,6 +25,8 @@ NVN implemented over Vulkan (MoltenVK).
 
 ### 2026-09-30 (night): Wonder boots on Android; W8 fixes; Windows plan
 
+![World map with the player](docs/media/wonder/39-world-map-player.png)
+![Touch controls, present-pass self-test](docs/media/wonder/41-android-touch-overlay-selftest.png)
 
 - **Mac (W8):**
   - Button icons: our own NintendoExtended glyph font. The title reads "Press [L] + [R] to Start".
@@ -50,6 +52,7 @@ NVN implemented over Vulkan (MoltenVK).
 
 ### 2026-09-30 (evening): 60 fps in the course (headless), W7 fixes
 
+![Course at 60 fps](docs/media/wonder/38-course-60fps-pipelined.png)
 
 - **60.0 fps steady** in course 1-1 headless (it was 48-58).
   - Cause: pipelined fences, now on by default. The frame's GPU work is no longer waited for, and compute results
@@ -67,6 +70,8 @@ NVN implemented over Vulkan (MoltenVK).
 
 ### 2026-09-30 (day): the course renders correctly (samplers restored), glitch plan W6
 
+![Course](docs/media/wonder/33-course-samplers-restored-goombas-lit.png)
+![World map](docs/media/wonder/34-world-map-samplers-restored.png)
 
 Five read-only studies of the remaining glitches gave one plan, [docs/nvn/GLITCH-PLAN.md](docs/nvn/GLITCH-PLAN.md)
 (milestone W6, issues #33-#42). What landed (docs/nvn/DEBUG.md #46-#55):
@@ -100,6 +105,7 @@ Five read-only studies of the remaining glitches gave one plan, [docs/nvn/GLITCH
   - This removed the intermittent glitches: the band at the horizon, exploded meshes, a white foreground layer.
     4 runs, 28 course frames, all clean (before: about 1 run in 3).
 
+![Course](docs/media/wonder/36-course-tree-goombas.png)
 
 Course (docked 1080p, headless): 42-47 fps.
 
@@ -113,6 +119,10 @@ Open:
 
 ### 2026-09-30 (night): 60 fps in menus, the course at ~30 fps
 
+![Title](docs/media/wonder/27-title-60fps.png)
+![Character select](docs/media/wonder/28-character-select-60fps.png)
+![World map](docs/media/wonder/29-world-map.png)
+![Course 1-1 (actors still dark)](docs/media/wonder/30-course-sky-fixed-actors-dark.png)
 
 - **Speed.**
   - Title, menus, character select and the world map run at 55-60 fps; they were at ~15 fps yesterday.
@@ -142,6 +152,9 @@ Open:
 
 ### 2026-09-29 (night): real colours, two crashes fixed
 
+![Before / after](docs/media/wonder/26-colours-before-after.png)
+![Course](docs/media/wonder/23-colours-fixed-course.png)
+![Bowser's castle](docs/media/wonder/25-bowser-castle-transformation.png)
 
 - Milestones W1 (stability), W2 (colour), W3 (60 fps) and W4 (glitches) on GitHub, issues #15-#25, from the study
   docs/nvn/STUDY-colour-speed-glitches.md.
@@ -152,6 +165,9 @@ Open:
 
 ### 2026-09-29 (evening): Mario and every character appear
 
+![Mario in the course](docs/media/wonder/19-mario-appears-course.png)
+![The cast at the Flower Castle](docs/media/wonder/20-cast-at-flower-castle.png)
+![Bowser arrives](docs/media/wonder/21-bowser-arrives.png)
 
 - **Characters render.** Two bugs hid them (docs/nvn/DEBUG.md #26): Metal refused every skinned pipeline (integer
   bone-index inputs declared as float; the integer input patch is now on by default), and the per-mesh draw lists the
@@ -178,6 +194,9 @@ Open:
 
 ### 2026-09-29 (late morning): the opening cutscene plays in 3D
 
+![Opening: the Flower Kingdom](docs/media/wonder/12-opening-flower-kingdom-3d.png)
+![Opening: hills and the airship](docs/media/wonder/13-opening-hills-airship.png)
+![Opening: the logo](docs/media/wonder/14-opening-logo.png)
 
 - The opening now runs past its dialogs: Peach's voice, the party timeline music, Kamek's airship flying over the
   Flower Kingdom, the logo. The recompiler fix that got it there: a jump table whose base register comes from another
@@ -186,6 +205,9 @@ Open:
 
 ### 2026-09-29 (morning): character select, the opening, audio, a memory leak fixed
 
+![Character select](docs/media/wonder/07-character-select.png)
+![Opening, sky](docs/media/wonder/10-opening-sky.png)
+![HUD after the opening dialogs](docs/media/wonder/11-hud-after-opening.png)
 
 - **Title → file select → player count → character select → confirmation → opening cutscene → HUD.** Menus need
   A held ~1 s (short presses were missed); the opening dialogs advance with repeated/long presses.
@@ -205,6 +227,7 @@ Open:
 
 ### 2026-09-29 (early morning): 30 fps, past the title to the file select
 
+![File select](docs/media/wonder/06-file-select.png)
 
 - **Performance: from 2-3 fps to the game's 30 fps.** 8-bit index buffers were converted by MoltenVK on the GPU at
   every draw (~10 ms each, ~550 ms per frame); they are widened on the host now. GPU ~10 ms per frame on the title.
@@ -218,6 +241,7 @@ Open:
 
 ### 2026-09-28 (night, latest): the title screen, correct colours
 
+![Super Mario Bros. Wonder title screen rendered natively through NVN → Vulkan on an M1](docs/media/wonder/05-title-screen.png)
 
 - **The title screen renders correctly on the Mac**: recompiled CPU code + NVN replayed on Vulkan/MoltenVK, colours
   exact (a texel of the key art: 60,196,130 in the texture, 60,195,128 on screen after the post chain).
@@ -229,6 +253,7 @@ Open:
 
 ### 2026-09-28 (night, later): the title screen through Vulkan
 
+![Title screen, tiling and swizzles fixed, colours still wrong](docs/media/wonder/04-title-swizzle-nan-green.png)
 
 - **The title art renders natively** (M1, MoltenVK): the Super Mario Bros. Wonder key art, logo and checkered
   background come out of the game's own NVN command lists, replayed as Vulkan draws with the translated shaders. The

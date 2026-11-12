@@ -16,7 +16,9 @@ legally dumped copy, keys and firmware.
 
 | Title | Character select |
 |---|---|
+| ![title](docs/media/wonder/37-title.png) | ![select](docs/media/wonder/35-character-select-samplers.png) |
 | **World map** | **Course 1-1, 60 fps** |
+| ![map](docs/media/wonder/39-world-map-player.png) | ![course](docs/media/wonder/38-course-60fps-pipelined.png) |
 
 ### What works
 
@@ -150,7 +152,9 @@ emulation anywhere. RTX 3050 laptop, 1280x720, 143 fps (vsync). It also runs on 
 
 | Logo | Main menu |
 |---|---|
+| ![logo](docs/media/first-frame-logo.png) | ![menu](docs/media/main-menu.png) |
 | **Intro** | **Gameplay** |
+| ![intro](docs/media/intro.png) | ![gameplay](docs/media/gameplay.png) |
 
 ### Approach
 

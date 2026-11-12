@@ -3,11 +3,15 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
+#include <cstdint>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 
 #include "nvn_pipeline.h"
@@ -17,6 +21,124 @@
 namespace nx::nvn {
 
 using namespace nx::vk;
+
+namespace {
+
+// Pipeline recipes are portable within this runtime version and GPU family. They contain shader hashes and the
+// pointer-free part of PipelineKey; Vulkan's own pipeline cache separately stores the driver's compiled data.
+constexpr char kPipelineKeysMagic[8] = {'W', 'O', 'N', 'P', 'I', 'P', '0', '1'};
+constexpr uint32_t kPipelineKeysVersion = 1;
+constexpr uint64_t kMaxPipelineRecords = 100000;
+struct PipelineKeysHeader {
+    char magic[8]{};
+    uint32_t version = kPipelineKeysVersion;
+    uint32_t record_size = 0;
+    uint64_t count = 0;
+    uint32_t vendor = 0, device = 0;
+};
+struct PipelineKeysRecord {
+    char vs_hash[16]{}, fs_hash[16]{};  // fragment hash all zero: depth-only pipeline
+    uint32_t vs_shared = 0, fs_shared = 0;
+    uint32_t vs_local[3] = {1, 1, 1}, fs_local[3] = {1, 1, 1};
+    PipelineKey key{};  // vs/fs pointers are always null on disk
+};
+static_assert(std::is_trivially_copyable_v<PipelineKeysHeader> && std::is_trivially_copyable_v<PipelineKeysRecord>);
+
+std::vector<PipelineKeysRecord> g_pipeline_key_records;
+std::set<std::string> g_pipeline_key_ids;
+std::map<std::string, std::unique_ptr<ShaderInfo>> g_pipeline_warm_shaders;
+std::string g_pipeline_keys_path;
+uint32_t g_pipeline_vendor = 0, g_pipeline_device = 0;
+bool g_pipeline_keys_loaded = false, g_pipeline_keys_dirty = false;
+
+std::string pipeline_record_id(const PipelineKeysRecord& rec) {
+    std::string id(rec.vs_hash, sizeof rec.vs_hash);
+    id.append(rec.fs_hash, sizeof rec.fs_hash);
+    id.append(reinterpret_cast<const char*>(&rec.key), sizeof rec.key);
+    return id;
+}
+
+bool valid_pipeline_hash(const char hash[16]) {
+    for (int i = 0; i < 16; ++i)
+        if (!((hash[i] >= '0' && hash[i] <= '9') || (hash[i] >= 'a' && hash[i] <= 'f'))) return false;
+    return true;
+}
+
+bool open_pipeline_keys_path() {
+    if (!g_pipeline_keys_path.empty()) return true;
+    VkPhysicalDeviceProperties props{};
+    p_vkGetPhysicalDeviceProperties(vk_physical(), &props);
+    g_pipeline_vendor = props.vendorID, g_pipeline_device = props.deviceID;
+    char filename[80];
+    std::snprintf(filename, sizeof filename, "/pipeline_keys_%04x_%04x.bin", props.vendorID, props.deviceID);
+    g_pipeline_keys_path = plat::data_root() + filename;
+    return true;
+}
+
+void load_pipeline_keys() {
+    if (g_pipeline_keys_loaded) return;
+    g_pipeline_keys_loaded = true;
+    open_pipeline_keys_path();
+    FILE* f = plat::fopen_utf8(g_pipeline_keys_path, "rb");
+    if (!f) return;
+    plat::fseek64(f, 0, SEEK_END);
+    const int64_t length = plat::ftell64(f);
+    plat::fseek64(f, 0, SEEK_SET);
+    PipelineKeysHeader h{};
+    bool valid = length >= int64_t(sizeof h) && length <= (128ll << 20) &&
+                 std::fread(&h, 1, sizeof h, f) == sizeof h && std::memcmp(h.magic, kPipelineKeysMagic, 8) == 0 &&
+                 h.version == kPipelineKeysVersion && h.record_size == sizeof(PipelineKeysRecord) &&
+                 h.vendor == g_pipeline_vendor && h.device == g_pipeline_device && h.count <= kMaxPipelineRecords &&
+                 uint64_t(length) == sizeof h + h.count * sizeof(PipelineKeysRecord);
+    if (valid) {
+        g_pipeline_key_records.resize(size_t(h.count));
+        valid = h.count == 0 || std::fread(g_pipeline_key_records.data(), sizeof(PipelineKeysRecord), size_t(h.count), f) == h.count;
+    }
+    std::fclose(f);
+    if (!valid) {
+        g_pipeline_key_records.clear();
+        log("nvn/vk: recorded pipeline keys are invalid or from another runtime version; starting fresh");
+        return;
+    }
+    for (auto& rec : g_pipeline_key_records) {
+        rec.key.vs = rec.key.fs = nullptr;  // never trust pointer bytes from disk, even in a versioned local cache
+        g_pipeline_key_ids.insert(pipeline_record_id(rec));
+    }
+    log("nvn/vk: loaded %llu recorded pipeline recipes from %s", (unsigned long long)g_pipeline_key_records.size(),
+        g_pipeline_keys_path.c_str());
+}
+
+ShaderInfo* load_pipeline_shader(const char hash[16], uint32_t shared, const uint32_t local[3]) {
+    if (!valid_pipeline_hash(hash)) return nullptr;
+    const std::string h(hash, 16);
+    if (h == std::string(16, '\0')) return nullptr;
+    std::string identity = h;
+    identity.append(reinterpret_cast<const char*>(&shared), sizeof shared);
+    identity.append(reinterpret_cast<const char*>(local), sizeof(uint32_t) * 3);
+    if (auto it = g_pipeline_warm_shaders.find(identity); it != g_pipeline_warm_shaders.end()) return it->second.get();
+    const std::string path = plat::data_root() + "/spirv/" + h + ".spv";
+    FILE* f = plat::fopen_utf8(path, "rb");
+    if (!f) return nullptr;
+    plat::fseek64(f, 0, SEEK_END);
+    const int64_t bytes = plat::ftell64(f);
+    plat::fseek64(f, 0, SEEK_SET);
+    if (bytes < 20 || bytes > (64ll << 20) || (bytes & 3)) { std::fclose(f); return nullptr; }
+    auto info = std::make_unique<ShaderInfo>();
+    info->hash = h;
+    info->spirv.resize(size_t(bytes) / 4);
+    const bool read = std::fread(info->spirv.data(), 1, size_t(bytes), f) == size_t(bytes);
+    std::fclose(f);
+    if (!read || !reflect_spirv(info->spirv.data(), info->spirv.size(), info->refl)) return nullptr;
+    info->stage = info->refl.stage;
+    info->control.valid = true;
+    info->control.shared_size = shared;
+    for (int i = 0; i < 3; ++i) info->control.local_size[i] = info->local_size[i] = local[i] ? local[i] : 1;
+    ShaderInfo* result = info.get();
+    g_pipeline_warm_shaders.emplace(std::move(identity), std::move(info));
+    return result;
+}
+
+}  // namespace
 
 bool shadow_coord_debug_on() {
     static const bool enabled = [] {
@@ -211,6 +333,80 @@ bool ufloat_raw() {
 
 }  // namespace
 
+void record_pipeline_key(const PipelineKey& key) {
+    if (!key.vs || key.vs->hash.size() != 16 || (key.fs && key.fs->hash.size() != 16)) return;
+    load_pipeline_keys();
+    if (g_pipeline_key_records.size() >= kMaxPipelineRecords) return;
+    PipelineKeysRecord rec{};
+    std::memcpy(rec.vs_hash, key.vs->hash.data(), 16);
+    if (key.fs) std::memcpy(rec.fs_hash, key.fs->hash.data(), 16);
+    rec.vs_shared = key.vs->control.shared_size;
+    rec.fs_shared = key.fs ? key.fs->control.shared_size : 0;
+    std::copy(std::begin(key.vs->local_size), std::end(key.vs->local_size), rec.vs_local);
+    if (key.fs) std::copy(std::begin(key.fs->local_size), std::end(key.fs->local_size), rec.fs_local);
+    std::memcpy(&rec.key, &key, sizeof key);
+    rec.key.vs = rec.key.fs = nullptr;
+    const std::string id = pipeline_record_id(rec);
+    if (g_pipeline_key_ids.insert(id).second) {
+        g_pipeline_key_records.push_back(rec);
+        g_pipeline_keys_dirty = true;
+    }
+}
+
+void save_pipeline_keys(bool force) {
+    if (!g_pipeline_keys_dirty && !force) return;
+    open_pipeline_keys_path();
+    PipelineKeysHeader h{};
+    std::memcpy(h.magic, kPipelineKeysMagic, sizeof h.magic);
+    h.record_size = sizeof(PipelineKeysRecord);
+    h.count = g_pipeline_key_records.size();
+    h.vendor = g_pipeline_vendor, h.device = g_pipeline_device;
+    const std::string tmp = g_pipeline_keys_path + ".tmp";
+    FILE* f = plat::fopen_utf8(tmp, "wb");
+    if (!f) return;
+    bool ok = std::fwrite(&h, 1, sizeof h, f) == sizeof h;
+    if (ok && !g_pipeline_key_records.empty())
+        ok = std::fwrite(g_pipeline_key_records.data(), sizeof(PipelineKeysRecord), g_pipeline_key_records.size(), f) ==
+             g_pipeline_key_records.size();
+    ok = std::fclose(f) == 0 && ok;
+    std::remove(g_pipeline_keys_path.c_str());
+    if (ok && std::rename(tmp.c_str(), g_pipeline_keys_path.c_str()) == 0) {
+        g_pipeline_keys_dirty = false;
+        log("nvn/vk: saved %llu pipeline recipes%s", (unsigned long long)g_pipeline_key_records.size(),
+            force ? " at shutdown" : "");
+    }
+}
+
+void prepare_recorded_pipelines() {
+    load_pipeline_keys();
+    const uint64_t total = g_pipeline_key_records.size();
+    if (!total) return;
+    const uint64_t start = plat::monotonic_ns();
+    uint64_t ready = 0, skipped = 0;
+    plat::shader_compile_progress(0, total, true);
+    log("nvn/vk: prewarming %llu previously seen graphics pipelines", (unsigned long long)total);
+    for (uint64_t i = 0; i < total; ++i) {
+        const PipelineKeysRecord& rec = g_pipeline_key_records[size_t(i)];
+        ShaderInfo* vs = load_pipeline_shader(rec.vs_hash, rec.vs_shared, rec.vs_local);
+        ShaderInfo* fs = load_pipeline_shader(rec.fs_hash, rec.fs_shared, rec.fs_local);
+        const bool has_fragment = std::any_of(std::begin(rec.fs_hash), std::end(rec.fs_hash), [](char c) { return c != 0; });
+        if (!vs || vs->stage != ShaderStage::Vertex || (has_fragment && (!fs || fs->stage != ShaderStage::Fragment))) {
+            ++skipped;
+        } else {
+            PipelineKey key = rec.key;
+            key.vs = vs, key.fs = fs;
+            std::vector<const ShaderInfo*> stages{vs};
+            if (fs) stages.push_back(fs);
+            if (graphics_pipeline(key, program_layout(stages))) ++ready; else ++skipped;
+        }
+        if ((i & 15u) == 15u || i + 1 == total) plat::shader_compile_progress(i + 1, total, true);
+    }
+    plat::shader_compile_progress(total, total, false);
+    log("nvn/vk: pipeline prewarm finished: %llu/%llu ready, %llu skipped in %.1f ms",
+        (unsigned long long)ready, (unsigned long long)total, (unsigned long long)skipped,
+        double(plat::monotonic_ns() - start) / 1e6);
+}
+
 // ---- layouts ----------------------------------------------------------------------------------------------------------
 
 const ProgramLayout& program_layout(const std::vector<const ShaderInfo*>& stages) {
@@ -268,14 +464,20 @@ const ProgramLayout& program_layout(const std::vector<const ShaderInfo*>& stages
 // ---- graphics pipelines ---------------------------------------------------------------------------------------------
 
 VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout) {
+    if (!key.vs || key.vs->hash.size() != 16 || (key.fs && key.fs->hash.size() != 16)) return VK_NULL_HANDLE;
     // By the key's bytes, as before, but hashed (nvn_pipeline.h) instead of a ~700-byte std::string built and
     // compared down a tree per draw; and the last entry first: consecutive draws mostly share their state.
-    using Key = ByteKey<sizeof(PipelineKey)>;
+    using Key = ByteKey<sizeof(PipelineKey) + 32>;
     static std::unordered_map<Key, VkPipeline, ByteKeyHash> cache;
     static const std::pair<const Key, VkPipeline>* last = nullptr;  // entries are never erased
-    if (last && std::memcmp(&key, last->first.b, sizeof key) == 0) return last->second;
-    Key k;
-    std::memcpy(k.b, &key, sizeof key);
+    Key k{};
+    std::memcpy(k.b, key.vs->hash.data(), 16);
+    if (key.fs) std::memcpy(k.b + 16, key.fs->hash.data(), 16);
+    PipelineKey state_key{};
+    std::memcpy(&state_key, &key, sizeof key);
+    state_key.vs = state_key.fs = nullptr;
+    std::memcpy(k.b + 32, &state_key, sizeof state_key);
+    if (last && std::memcmp(k.b, last->first.b, sizeof k.b) == 0) return last->second;
     if (auto it = cache.find(k); it != cache.end()) return (last = &*it)->second;
 
     VkPipelineShaderStageCreateInfo stages[2]{};
@@ -456,6 +658,7 @@ VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout
         log("nvn/vk: pipeline for %s + %s failed", key.vs ? key.vs->hash.c_str() : "-", key.fs ? key.fs->hash.c_str() : "-");
     else if (g_trace)
         log("nvn/vk: pipeline %zu: %s + %s", cache.size() + 1, key.vs ? key.vs->hash.c_str() : "-", key.fs ? key.fs->hash.c_str() : "-");
+    if (made == VK_SUCCESS) record_pipeline_key(key);
     return (last = &*cache.emplace(k, p).first)->second;
 }
 
@@ -631,7 +834,7 @@ VkPipeline compute_pipeline(const ShaderInfo* cs, const ProgramLayout& layout) {
         if (p_vkCreateComputePipelines(vk_device(), pipeline_cache(), 1, &ci, nullptr, &p) != VK_SUCCESS) {
             log("nvn/vk: compute pipeline for %s failed", cs->hash.c_str());
             p = VK_NULL_HANDLE;
-        }
+        } else note_pipeline_cache_changed();
     }
     return p;
 }

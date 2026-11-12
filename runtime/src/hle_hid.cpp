@@ -5,6 +5,7 @@
 #include <deque>
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <mutex>
 #include <set>
 #include <string>

@@ -15,6 +15,15 @@
 #include <thread>
 #include <vector>
 
+// SetProcessDpiAwarenessContext and per-monitor-v2 awareness are Win10 APIs.
+// The bundled LLVM-MinGW headers hide their declarations unless the target
+// Windows version is explicit (unlike the user's Visual Studio environment).
+#ifndef WINVER
+#define WINVER 0x0A00
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
 #include <windows.h>
 #include <xaudio2.h>
 #include <xinput.h>
@@ -28,6 +37,7 @@
 #include <nx/runtime.h>
 
 #include "kernel.h"
+#include "nvn/nvn_vk.h"
 #include "pc_menu_win.h"
 #include "svc_am.h"
 #include "platform.h"
@@ -72,7 +82,7 @@ void start_thread(ThreadFn fn, void* arg, size_t stack_size) {
 }
 
 void exit_thread() { ExitThread(0); }
-void exit_process(int code) { ExitProcess(UINT(code)); }
+void exit_process(int code) { nx::nvn::flush_pipeline_cache(); ExitProcess(UINT(code)); }
 void sleep_ns(int64_t ns) { std::this_thread::sleep_for(std::chrono::nanoseconds(ns)); }
 void yield() { SwitchToThread(); }
 void set_thread_name(const char*) {}
@@ -193,6 +203,8 @@ static void save_pc_settings() {
          << "\ninternal_resolution=" << g_pc_settings.internal_resolution << "\nmuted=" << g_pc_settings.muted << "\nfullscreen=" << g_pc_settings.fullscreen
          << "\nalways_on_top=" << g_pc_settings.always_on_top << "\nlanguage=" << g_pc_settings.language
          << "\ngame_language=" << g_pc_settings.game_language
+         << "\nmemory_limit_gb=" << g_pc_settings.memory_limit_gb
+         << "\nlow_vram_profile=" << g_pc_settings.low_vram_profile
          << "\ncontroller_preset=" << g_pc_settings.controller_preset
          << "\nmetrics_enabled=" << g_pc_settings.metrics_enabled << "\nmetric_fps=" << g_pc_settings.metric_fps
          << "\nmetric_one_percent_low=" << g_pc_settings.metric_one_percent_low
@@ -219,6 +231,8 @@ static void load_pc_settings() {
         else if (std::sscanf(line.c_str(), "always_on_top=%d", &value) == 1) g_pc_settings.always_on_top = value != 0;
         else if (std::sscanf(line.c_str(), "language=%d", &value) == 1) g_pc_settings.language = std::clamp(value, 0, 3);
         else if (std::sscanf(line.c_str(), "game_language=%d", &value) == 1) g_pc_settings.game_language = std::clamp(value, 0, 3);
+        else if (std::sscanf(line.c_str(), "memory_limit_gb=%d", &value) == 1) g_pc_settings.memory_limit_gb = std::clamp(value, 2, 32);
+        else if (std::sscanf(line.c_str(), "low_vram_profile=%d", &value) == 1) g_pc_settings.low_vram_profile = value != 0;
         else if (std::sscanf(line.c_str(), "controller_preset=%d", &value) == 1)
             g_pc_settings.controller_preset = std::clamp(value, 0, 1);
         else if (std::sscanf(line.c_str(), "metrics_enabled=%d", &value) == 1) g_pc_settings.metrics_enabled = value != 0;
@@ -245,6 +259,8 @@ static void load_pc_settings() {
     nx::set_internal_resolution_preset(g_pc_settings.internal_resolution);
     nx::set_game_language(g_pc_settings.game_language);
     apply_input_bindings(g_pc_settings);
+    set_memory_limit_gb(g_pc_settings.memory_limit_gb);
+    _putenv_s("NX_LOW_VRAM_PROFILE", g_pc_settings.low_vram_profile ? "1" : "0");
 }
 
 static void set_game_volume() {
@@ -453,11 +469,14 @@ static void apply_pc_menu(const PcMenuState& state, bool persist) {
     g_pc_settings.internal_resolution = std::clamp(g_pc_settings.internal_resolution, 0, 4);
     g_pc_settings.language = std::clamp(g_pc_settings.language, 0, 3);
     g_pc_settings.game_language = std::clamp(g_pc_settings.game_language, 0, 3);
+    g_pc_settings.memory_limit_gb = std::clamp(g_pc_settings.memory_limit_gb, 2, 32);
     g_pc_settings.controller_preset = std::clamp(g_pc_settings.controller_preset, 0, 1);
     g_pc_settings.overlay_position = std::clamp(g_pc_settings.overlay_position, 0, 3);
     apply_input_bindings(g_pc_settings);
     nx::set_game_language(g_pc_settings.game_language);
     apply_metrics_settings(g_pc_settings);
+    set_memory_limit_gb(g_pc_settings.memory_limit_gb);
+    _putenv_s("NX_LOW_VRAM_PROFILE", g_pc_settings.low_vram_profile ? "1" : "0");
     if (g_fullscreen != g_pc_settings.fullscreen) toggle_fullscreen(g_window);
     else if (size_changed && !g_fullscreen) resize_window_client(g_window, g_pc_settings.width, g_pc_settings.height);
     if (topmost_changed && g_window)
@@ -545,6 +564,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
         }
         case WM_CLOSE:
             log("window closed");
+            nx::nvn::flush_pipeline_cache();
             ExitProcess(0);
         case WM_KEYDOWN:
             if (w == VK_F1 && !(l & (1ll << 30))) {
@@ -972,8 +992,8 @@ LONG WINAPI throw_tracer(EXCEPTION_POINTERS* e) {
 
 int main() {
     nx::plat::make_dirs(nx::plat::data_root());
-    nx::plat::start_memory_guard();  // before anything can grow: a leak must never freeze the machine (memguard_win.cpp)
     nx::plat::load_pc_settings();
+    nx::plat::start_memory_guard();  // before anything can grow: a leak must never freeze the machine (memguard_win.cpp)
     if (!SDL_Init(SDL_INIT_GAMEPAD)) std::fprintf(stderr, "SDL gamepad input unavailable: %s\n", SDL_GetError());
     SetUnhandledExceptionFilter(crash_handler);
     if (const char* t = std::getenv("NX_THROW_TRACE"); t && *t == '1') AddVectoredExceptionHandler(1, throw_tracer);

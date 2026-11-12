@@ -27,7 +27,7 @@ std::vector<KThread*> g_sync_waiters;
 std::unordered_map<uint32_t, std::shared_ptr<KObject>> g_handles;
 uint32_t g_next_handle = 0x10000;
 std::atomic<uint64_t> g_next_thread_id{0x50};
-uint64_t g_heap_size = 0;
+std::atomic<uint64_t> g_heap_size{0};
 
 std::vector<KThread*> g_mutex_waiters;
 std::vector<KThread*> g_cv_waiters;
@@ -71,7 +71,7 @@ void notify_all() {
 
 KThread* self_thread() { return t_self; }
 
-uint64_t heap_size() { return g_heap_size; }
+uint64_t heap_size() { return g_heap_size.load(std::memory_order_relaxed); }
 
 CPU& current_cpu() { return t_self->ctx; }
 
@@ -429,10 +429,23 @@ void svc(CPU& c, uint32_t imm, uint64_t pc) {
                 rc = 0xD001;
                 break;
             }
-            if (size > g_heap_size) commit(kHeapBase + g_heap_size, size - g_heap_size);
+            const uint64_t old_size = g_heap_size.load(std::memory_order_relaxed);
+            if (size > old_size) {
+                if (!commit(kHeapBase + old_size, size - old_size)) {
+                    rc = 0x10801;  // Horizon: memory resource limit reached
+                    break;
+                }
+            } else if (size < old_size) {
+                // svcSetHeapSize releases the tail when the guest shrinks its heap. Leaving it committed made
+                // Windows PrivateUsage retain the old high-water mark even after the game returned heap memory.
+                decommit(kHeapBase + size, old_size - size);
+            }
             vm_set(kHeapBase, kHeapMax, kMemInaccessible, 0);
             if (size) vm_set(kHeapBase, size, kMemHeap, 3);
-            g_heap_size = size;
+            g_heap_size.store(size, std::memory_order_relaxed);
+            if (size != old_size)
+                log("memory: guest heap changed %.2f -> %.2f GiB", double(old_size) / (1ull << 30),
+                    double(size) / (1ull << 30));
             c.x[1] = kHeapBase;
             break;
         }

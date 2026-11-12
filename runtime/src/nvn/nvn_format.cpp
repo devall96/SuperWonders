@@ -76,13 +76,19 @@ constexpr VkFormat kAstcSrgb[] = {
 bool g_astc_native = true;
 uint32_t g_astc_decode = 3;  // bit 0 linear ASTC formats, bit 1 sRGB ones: decoded when not native (bisecting)
 uint32_t g_astc_list[8] = {}, g_astc_listed = 0;  // NX_ASTC_DECODE=<hex format>,...: only those (bisecting)
+bool g_astc_bc3 = false;
 
 }  // namespace
 
 // Without textureCompressionASTC_LDR (NVIDIA, AMD) ASTC textures are RGBA8 images, decoded at upload (nvn_astc.cpp).
 // NX_ASTC_DECODE=linear|srgb decodes only that half on a GPU that has ASTC (bisecting).
-void set_astc_native(bool native) {
+void set_astc_native(bool native, bool bc_supported) {
     g_astc_native = native;
+    const char* low_vram = std::getenv("NX_LOW_VRAM_PROFILE");
+    g_astc_bc3 = !native && bc_supported && low_vram && low_vram[0] == '1';
+    if (g_astc_bc3) log("nvn/vk: Low VRAM profile: ASTC will be transcoded to BC3 (textureCompressionBC available)");
+    else if (low_vram && low_vram[0] == '1' && !native && !bc_supported)
+        log("nvn/vk: Low VRAM profile requested but BC texture compression is unavailable; using RGBA8 ASTC fallback");
     if (const char* e = std::getenv("NX_ASTC_DECODE"); e && native) {
         g_astc_decode = std::strcmp(e, "linear") == 0 ? 1u : std::strcmp(e, "srgb") == 0 ? 2u : 3u;
         g_astc_native = false;
@@ -105,8 +111,8 @@ bool native_r11g11b10();  // nvn_caps.cpp
 VkFormat vk_format(uint32_t f) {
     if (f == 0x3f && native_r11g11b10()) return VK_FORMAT_B10G11R11_UFLOAT_PACK32;  // nvn_caps.cpp
     if (f < sizeof kFormats / sizeof kFormats[0]) return kFormats[f].vk;
-    if (f >= 0x79 && f <= 0x86) return astc_decoded(f) ? VK_FORMAT_R8G8B8A8_UNORM : kAstc[f - 0x79];
-    if (f >= 0x87 && f <= 0x94) return astc_decoded(f) ? VK_FORMAT_R8G8B8A8_SRGB : kAstcSrgb[f - 0x87];
+    if (f >= 0x79 && f <= 0x86) return g_astc_bc3 ? VK_FORMAT_BC3_UNORM_BLOCK : astc_decoded(f) ? VK_FORMAT_R8G8B8A8_UNORM : kAstc[f - 0x79];
+    if (f >= 0x87 && f <= 0x94) return g_astc_bc3 ? VK_FORMAT_BC3_SRGB_BLOCK : astc_decoded(f) ? VK_FORMAT_R8G8B8A8_SRGB : kAstcSrgb[f - 0x87];
     switch (f) {
         case 0x95: return VK_FORMAT_B5G6R5_UNORM_PACK16;
         case 0x96:

@@ -9,6 +9,7 @@
 #include "nvn_shaders.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 

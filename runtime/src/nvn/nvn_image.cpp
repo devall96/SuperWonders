@@ -17,6 +17,17 @@ using namespace nx::vk;
 
 namespace {
 
+uint64_t simulated_image_memory_budget() {
+    static const uint64_t bytes = [] {
+        const char* value = std::getenv("NX_VRAM_IMAGE_BUDGET_GB");
+        if (!value || !*value) return uint64_t(0);
+        const double gb = std::strtod(value, nullptr);
+        if (!(gb > 0.0) || gb > 1024.0) return uint64_t(0);
+        return uint64_t(gb * double(1ull << 30));
+    }();
+    return bytes;
+}
+
 float render_scale_for(const Texture& texture) {
     const uint32_t target_width = internal_resolution_target_width();
     if (!target_width) return 1.0f;  // Original / dynamic
@@ -248,8 +259,43 @@ GpuImage* image_of(uint64_t guest) {
     VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     ai.allocationSize = req.size;
     ai.memoryTypeIndex = memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (!check(p_vkAllocateMemory(vk_device(), &ai, nullptr, &img->memory), "vkAllocateMemory")) return nullptr;
-    p_vkBindImageMemory(vk_device(), img->image, img->memory, 0);
+    const uint64_t budget = simulated_image_memory_budget();
+    const GpuImageMemoryStats before = budget ? gpu_image_memory_stats() : GpuImageMemoryStats{};
+    const bool capped = budget && (req.size > budget || before.live_bytes > budget - req.size);
+    if (budget) {
+        static bool logged = false;
+        if (!logged) {
+            log("nvn/vk: NX_VRAM_IMAGE_BUDGET_GB simulates %.2f GiB for NVN image allocations only",
+                double(budget) / (1ull << 30));
+            logged = true;
+        }
+    }
+    const VkResult result = capped ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                   : p_vkAllocateMemory(vk_device(), &ai, nullptr, &img->memory);
+    if (!check(result, "vkAllocateMemory")) {
+        if (std::getenv("NX_TRACE_VRAM") || capped) {
+            const GpuImageMemoryStats stats = gpu_image_memory_stats();
+            log("nvn/vk: VRAM allocation failure%s: request %.2f MiB, tracked live %.2f GiB / peak %.2f GiB, %llu images",
+                capped ? " (simulated cap)" : "", double(req.size) / (1ull << 20),
+                double(stats.live_bytes) / (1ull << 30), double(stats.peak_bytes) / (1ull << 30),
+                (unsigned long long)stats.live_allocations);
+        }
+        p_vkDestroyImage(vk_device(), img->image, nullptr);
+        img->image = VK_NULL_HANDLE;
+        if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY) trim_reusable_image_cache();
+        return nullptr;
+    }
+    img->allocation_size = req.size;
+    gpu_image_memory_allocated(req.size);
+    if (!check(p_vkBindImageMemory(vk_device(), img->image, img->memory, 0), "vkBindImageMemory")) {
+        p_vkFreeMemory(vk_device(), img->memory, nullptr);
+        gpu_image_memory_freed(img->allocation_size);
+        p_vkDestroyImage(vk_device(), img->image, nullptr);
+        img->allocation_size = 0;
+        img->memory = VK_NULL_HANDLE;
+        img->image = VK_NULL_HANDLE;
+        return nullptr;
+    }
     constexpr VkComponentSwizzle kSwizzle[] = {VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R,
                                                VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,   VK_COMPONENT_SWIZZLE_A};
     img->swizzle = {kSwizzle[t->swizzle[0]], kSwizzle[t->swizzle[1]], kSwizzle[t->swizzle[2]], kSwizzle[t->swizzle[3]]};

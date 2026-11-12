@@ -97,6 +97,7 @@ bool write_watch_fault(void* at);
 bool headless();
 // Ends the process when its memory footprint passes NX_MEM_LIMIT_GB (default 8); logs it every 30 s (macOS).
 void start_memory_guard();
+void set_memory_limit_gb(double gb);
 // How much of [from, to) (monotonic ns) the memory guard spent reading (memguard_android.cpp; 0 elsewhere).
 uint64_t memguard_overlap_ns(uint64_t from, uint64_t to);
 // The calling thread's CPU time, page faults (major, minor) and context switches (voluntary, involuntary)

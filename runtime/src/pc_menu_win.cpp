@@ -55,6 +55,10 @@ struct Labels {
     const wchar_t* standard_desc;
     const wchar_t* nintendo_desc;
     const wchar_t* restart_note;
+    const wchar_t* system;
+    const wchar_t* memory_limit;
+    const wchar_t* low_vram;
+    const wchar_t* restart_low_vram;
 };
 
 constexpr Labels kLabels[] = {
@@ -62,22 +66,22 @@ constexpr Labels kLabels[] = {
      L"Internal resolution", L"Enable fullscreen", L"Exit fullscreen", L"Always on top: On", L"Always on top: Off",
       L"Game volume", L"Mute audio", L"Unmute audio", L"Game language", L"Restart the game to apply the language.", L"Button layout",
      L"A: bottom (A / Cross)     B: right (B / Circle)", L"A: right (B / Circle)     B: bottom (A / Cross)",
-     L"Internal resolution applies after restarting the game."},
+     L"Internal resolution applies after restarting the game.", L"System", L"Process memory limit", L"Low VRAM profile", L"Restart the game to apply the texture profile."},
     {L"Impostazioni", L"F1 o Esc per chiudere", L"Video", L"Audio", L"Controlli", L"Overlay", L"Dimensione finestra / output",
      L"Risoluzione interna", L"Attiva schermo intero", L"Esci da schermo intero", L"Sempre in primo piano: sì",
       L"Sempre in primo piano: no", L"Volume gioco", L"Disattiva audio", L"Riattiva audio", L"Lingua del gioco", L"Riavvia il gioco per applicare la lingua.", L"Disposizione tasti",
      L"A: in basso (A / Croce)     B: a destra (B / Cerchio)", L"A: a destra (B / Cerchio)     B: in basso (A / Croce)",
-     L"La risoluzione interna si applica al riavvio."},
+     L"La risoluzione interna si applica al riavvio.", L"Sistema", L"Limite memoria processo", L"Profilo VRAM ridotta", L"Riavvia il gioco per applicare il profilo texture."},
     {L"Einstellungen", L"F1 oder Esc zum Schließen", L"Video", L"Audio", L"Steuerung", L"Overlay", L"Fenster- / Ausgabegröße",
      L"Interne Auflösung", L"Vollbild aktivieren", L"Vollbild beenden", L"Immer im Vordergrund: Ein",
       L"Immer im Vordergrund: Aus", L"Spiel-Lautstärke", L"Ton stummschalten", L"Ton einschalten", L"Spielsprache", L"Spiel zum Übernehmen neu starten.", L"Tastenbelegung",
      L"A: unten (A / Kreuz)     B: rechts (B / Kreis)", L"A: rechts (B / Kreis)     B: unten (A / Kreuz)",
-     L"Interne Auflösung wird nach Neustart übernommen."},
+     L"Interne Auflösung wird nach Neustart übernommen.", L"System", L"Prozessspeicherlimit", L"Niedriger VRAM-Verbrauch", L"Spiel neu starten, um das Texturprofil anzuwenden."},
     {L"Paramètres", L"F1 ou Échap pour fermer", L"Vidéo", L"Audio", L"Commandes", L"Overlay", L"Taille fenêtre / sortie",
      L"Résolution interne", L"Activer le plein écran", L"Quitter le plein écran", L"Toujours au premier plan : oui",
       L"Toujours au premier plan : non", L"Volume du jeu", L"Couper le son", L"Rétablir le son", L"Langue du jeu", L"Redémarrez le jeu pour appliquer la langue.", L"Disposition des touches",
      L"A : bas (A / Croix)     B : droite (B / Cercle)", L"A : droite (B / Cercle)     B : bas (A / Croix)",
-     L"La résolution interne s'applique après redémarrage."},
+     L"La résolution interne s'applique après redémarrage.", L"Système", L"Limite mémoire du processus", L"Profil VRAM réduit", L"Redémarrez pour appliquer le profil de textures."},
 };
 
 constexpr const wchar_t* kOverlayLabels[4][6] = {
@@ -109,7 +113,7 @@ constexpr const wchar_t* kPhysicalNames[kPcControlCount] = {
     L"D-pad Right", L"D-pad Down",
 };
 
-enum class Section { Video, Audio, Controls, Overlay };
+enum class Section { Video, Audio, Controls, Overlay, System };
 enum class CaptureDevice { None, Keyboard, Controller };
 
 HWND g_owner = nullptr;
@@ -297,6 +301,52 @@ void paint_overlay(HDC dc) {
                DT_CENTER);
 }
 
+void paint_paragraph(HDC dc, const wchar_t* value, RECT r, COLORREF color, int size) {
+    SetTextColor(dc, color);
+    SetBkMode(dc, TRANSPARENT);
+    HFONT font = CreateFontW(-size, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HGDIOBJ old = SelectObject(dc, font);
+    DrawTextW(dc, value, -1, &r, DT_LEFT | DT_TOP | DT_WORDBREAK);
+    SelectObject(dc, old);
+    DeleteObject(font);
+}
+
+int memory_limit_choice(int current, int direction) {
+    constexpr int choices[] = {2, 4, 6, 8, 10, 12, 16, 24, 28, 32};
+    int index = 3;
+    for (int i = 0; i < int(std::size(choices)); ++i) if (choices[i] == current) index = i;
+    index = (index + direction + int(std::size(choices))) % int(std::size(choices));
+    return choices[index];
+}
+
+void paint_system(HDC dc) {
+    const Labels& text = labels();
+    MEMORYSTATUSEX status{sizeof(status)};
+    const bool known = GlobalMemoryStatusEx(&status) != FALSE;
+    const int installed_gb = known ? int((status.ullTotalPhys + (1ull << 30) - 1) >> 30) : 0;
+    const int recommended = known ? std::max(2, installed_gb - 4) : 0;
+    paint_text(dc, text.memory_limit, RECT{44, 148, 390, 176}, RGB(214, 222, 238), 16);
+    wchar_t value[48];
+    std::swprintf(value, 48, L"%d GB", g_state.memory_limit_gb);
+    paint_arrow(dc, 183, value);
+    wchar_t guidance[180];
+    if (known) std::swprintf(guidance, 180, L"Detected system RAM: %d GB. Suggested starting limit: %d GB (leaves about 4 GB for Windows and other apps).",
+                            installed_gb, recommended);
+    else wcscpy_s(guidance, L"System RAM could not be detected. Leave several GB for Windows and other apps.");
+    paint_paragraph(dc, guidance, RECT{48, 232, 510, 302}, RGB(170, 187, 210), 14);
+    paint_paragraph(dc, L"This is a safety cap on Wonder's private process memory (system commit, which can include driver allocations). It is not a direct GPU VRAM limit. Raising it may avoid an early stop, but can let a memory leak consume more system resources.",
+                    RECT{48, 306, 510, 382}, RGB(145, 162, 187), 13);
+    rounded(dc, RECT{44, 397, 516, 443}, g_state.low_vram_profile ? RGB(43, 70, 105) : RGB(35, 43, 61),
+            g_state.low_vram_profile ? RGB(102, 174, 255) : RGB(68, 81, 105));
+    paint_text(dc, text.low_vram, RECT{58, 397, 394, 443}, RGB(230, 235, 245), 15);
+    paint_text(dc, kToggleLabels[std::clamp(g_state.language, 0, 3)][g_state.low_vram_profile ? 1 : 0],
+               RECT{400, 397, 502, 443}, RGB(145, 207, 255), 14, DT_RIGHT);
+    paint_paragraph(dc, L"When ASTC is not supported by the GPU, store decoded ASTC textures as BC3 instead of RGBA8. This can greatly reduce texture memory; image quality may be slightly lower. Restart required.",
+                    RECT{48, 455, 510, 520}, RGB(145, 162, 187), 13);
+    paint_text(dc, text.restart_low_vram, RECT{35, 535, 525, 560}, RGB(210, 185, 135), 12, DT_CENTER);
+}
+
 void paint(HWND h) {
     PAINTSTRUCT ps{};
     HDC dc = BeginPaint(h, &ps);
@@ -312,15 +362,17 @@ void paint(HWND h) {
     paint_text(dc, g_language_dropdown ? L"▴" : L"▾", RECT{kLanguageRight - 28, kLanguageTop,
                kLanguageRight - 6, kLanguageBottom}, RGB(238, 243, 252), 14, DT_CENTER);
 
-    paint_tab(dc, RECT{20, kTabTop, 145, kTabBottom}, text.video, g_section == Section::Video);
-    paint_tab(dc, RECT{150, kTabTop, 275, kTabBottom}, text.audio, g_section == Section::Audio);
-    paint_tab(dc, RECT{280, kTabTop, 405, kTabBottom}, text.controls, g_section == Section::Controls);
-    paint_tab(dc, RECT{410, kTabTop, 535, kTabBottom}, text.overlay, g_section == Section::Overlay);
+    paint_tab(dc, RECT{12, kTabTop, 116, kTabBottom}, text.video, g_section == Section::Video);
+    paint_tab(dc, RECT{120, kTabTop, 224, kTabBottom}, text.audio, g_section == Section::Audio);
+    paint_tab(dc, RECT{228, kTabTop, 332, kTabBottom}, text.controls, g_section == Section::Controls);
+    paint_tab(dc, RECT{336, kTabTop, 440, kTabBottom}, text.overlay, g_section == Section::Overlay);
+    paint_tab(dc, RECT{444, kTabTop, 548, kTabBottom}, text.system, g_section == Section::System);
 
     if (g_section == Section::Video) paint_video(dc);
     else if (g_section == Section::Audio) paint_audio(dc);
     else if (g_section == Section::Controls) paint_controls(dc);
-    else paint_overlay(dc);
+    else if (g_section == Section::Overlay) paint_overlay(dc);
+    else paint_system(dc);
 
     paint_text(dc, text.close, RECT{35, 586, 525, 608}, RGB(140, 154, 177), 12, DT_CENTER);
 
@@ -459,17 +511,24 @@ LRESULT CALLBACK menu_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
                 InvalidateRect(h, nullptr, FALSE);
             }
             if (y >= kTabTop && y <= kTabBottom) {
-                if (x >= 20 && x <= 145) g_section = Section::Video;
-                else if (x >= 150 && x <= 275) g_section = Section::Audio;
-                else if (x >= 280 && x <= 405) g_section = Section::Controls;
-                else if (x >= 410 && x <= 535) g_section = Section::Overlay;
+                if (x >= 12 && x <= 116) g_section = Section::Video;
+                else if (x >= 120 && x <= 224) g_section = Section::Audio;
+                else if (x >= 228 && x <= 332) g_section = Section::Controls;
+                else if (x >= 336 && x <= 440) g_section = Section::Overlay;
+                else if (x >= 444 && x <= 548) g_section = Section::System;
                 g_capture_device = CaptureDevice::None;
                 g_capture_action = -1;
                 g_game_language_dropdown = false;
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
             }
-            if (g_section == Section::Overlay && y >= 426 && y <= 470 && x >= 44 && x <= 516) {
+            if (g_section == Section::System && y >= 183 && y <= 215 && x >= 416 && x <= 504) {
+                g_state.memory_limit_gb = memory_limit_choice(g_state.memory_limit_gb, x < 460 ? -1 : 1);
+                notify(true);
+            } else if (g_section == Section::System && y >= 397 && y <= 443) {
+                g_state.low_vram_profile = !g_state.low_vram_profile;
+                notify(true);
+            } else if (g_section == Section::Overlay && y >= 426 && y <= 470 && x >= 44 && x <= 516) {
                 g_overlay_position_dropdown = !g_overlay_position_dropdown;
                 InvalidateRect(h, nullptr, FALSE);
             } else if (g_section == Section::Overlay && y >= 144 && y <= 190) {
