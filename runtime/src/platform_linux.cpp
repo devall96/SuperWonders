@@ -99,6 +99,7 @@ std::atomic<uint32_t> g_pixel_w{0}, g_pixel_h{0};
 
 std::mutex g_pad_lock;
 PadState g_pad;
+std::atomic<bool> g_fast_forward{false};  // Tab held (sampled on the main thread)
 
 }  // namespace
 
@@ -174,6 +175,9 @@ void sleep_ns(int64_t ns) {
     while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
     }
 }
+
+// No vblank wait on Linux yet (SDL has none, and Vulkan present timing is not in use): hle_vi paces on its 60 Hz timer.
+bool wait_vblank() { return false; }
 
 void yield() { sched_yield(); }
 
@@ -323,8 +327,10 @@ static void sample_input() {
         p.ry = axis(SDL_GAMEPAD_AXIS_RIGHTY, true);
     }
     // Keyboard: WASD / arrows move, Space A, Shift B (run), J X, K Y, Q/E L/R, Z/C ZL/ZR, Enter +, Esc -.
+    bool tab = false;
     if (g_window && (SDL_GetWindowFlags(g_window) & SDL_WINDOW_INPUT_FOCUS)) {
         const bool* k = SDL_GetKeyboardState(nullptr);
+        tab = k[SDL_SCANCODE_TAB];  // fast-forward (hle_vi.cpp)
         if (k[SDL_SCANCODE_A] || k[SDL_SCANCODE_LEFT]) p.lx = -kStickMax, p.buttons |= kLeft;
         if (k[SDL_SCANCODE_D] || k[SDL_SCANCODE_RIGHT]) p.lx = kStickMax, p.buttons |= kRight;
         if (k[SDL_SCANCODE_W] || k[SDL_SCANCODE_UP]) p.ly = kStickMax, p.buttons |= kUp;
@@ -340,9 +346,12 @@ static void sample_input() {
         if (k[SDL_SCANCODE_RETURN]) p.buttons |= kPlus;
         if (k[SDL_SCANCODE_ESCAPE]) p.buttons |= kMinus;
     }
+    g_fast_forward = tab;
     std::lock_guard lk(g_pad_lock);
     g_pad = p;
 }
+
+bool fast_forward() { return g_fast_forward.load(std::memory_order_relaxed); }
 
 void read_pad(PadState& p) {
     {
