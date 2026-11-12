@@ -3,10 +3,10 @@
 compiler). Run after editing a shader.
 
   runtime/shaders/*.vert|*.frag    -> runtime/src/shaders_spv.h
-  runtime/shaders/fsr/*.comp       -> runtime/src/nvn/fsr_spv.h   (AMD FSR 1, includes from third_party/fsr1)
+  runtime/shaders/post/*.comp       -> runtime/src/nvn/post_spv.h   (FSR 1 with third_party/fsr1, FXAA)
 
 Usage: python tools/gen_shaders.py [glslc] [--only <header name part>]
-       (glslc: default the Android NDK's, or glslc on PATH; --only fsr regenerates fsr_spv.h alone)
+       (glslc: default the Android NDK's, or glslc on PATH; --only post regenerates post_spv.h alone)
 """
 import glob
 import os
@@ -21,7 +21,7 @@ root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # (sources, header, extra glslc arguments)
 OUTPUTS = [
     (os.path.join('runtime', 'shaders', '*.*'), os.path.join('runtime', 'src', 'shaders_spv.h'), []),
-    (os.path.join('runtime', 'shaders', 'fsr', '*.comp'), os.path.join('runtime', 'src', 'nvn', 'fsr_spv.h'),
+    (os.path.join('runtime', 'shaders', 'post', '*.comp'), os.path.join('runtime', 'src', 'nvn', 'post_spv.h'),
      ['-I', os.path.join(root, 'third_party', 'fsr1')]),
 ]
 

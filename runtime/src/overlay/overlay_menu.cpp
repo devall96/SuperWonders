@@ -110,6 +110,8 @@ constexpr const char* memory = "The game closes itself if its memory use passes 
 constexpr const char* upscaler = "How the game's image is enlarged when it is smaller than the window (a lower internal "
                                  "resolution, or fullscreen above 1080p). FSR 1 (AMD FidelityFX Super Resolution) keeps "
                                  "edges sharp; Bilinear is a plain stretch.";
+constexpr const char* antialiasing = "Smooths jagged edges on the final image. FXAA is quick and can soften fine "
+                                     "detail a little; the game's own anti-aliasing stays as it is.";
 constexpr const char* sharpness = "FSR 1's sharpening: higher is sharper (more contrast on edges), lower is softer.";
 constexpr const char* low_vram = "For graphics cards with little video memory: decoded textures are kept compressed "
                                  "(BC3), at a small cost in quality. Applies after restarting the game.";
@@ -165,6 +167,9 @@ void video(MenuContext& c, const Labels& l) {
     if (ImGui::IsItemDeactivatedAfterEdit()) settings_changed(true);
     ImGui::EndDisabled();
     describe(desc::sharpness);
+    const char* aa[] = {"Off", "FXAA"};
+    if (combo("Anti-aliasing", s.antialiasing, aa, 2)) settings_changed(true);
+    describe(desc::antialiasing);
 }
 
 void audio(MenuContext& c, const Labels& l) {
