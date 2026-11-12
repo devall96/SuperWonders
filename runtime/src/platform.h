@@ -19,6 +19,9 @@ void start_thread(ThreadFn fn, void* arg, size_t stack_size);
 [[noreturn]] void exit_thread();
 [[noreturn]] void exit_process(int code);
 void sleep_ns(int64_t ns);
+// Waits out the display's next 1/60 s of vertical blanks (2 on a 120 Hz display) and returns true; false where the
+// blank is not available or the refresh is no multiple of 60 Hz (the caller then times 60 Hz itself).
+bool wait_vblank();
 void yield();
 void set_thread_name(const char* name);
 int64_t current_thread_id();  // the host OS thread id
@@ -69,6 +72,7 @@ struct PadState {
     int32_t lx = 0, ly = 0, rx = 0, ry = 0;
 };
 void read_pad(PadState& p);  // player 1
+bool fast_forward();  // held: the game runs unpaced (Tab on PC; false where there is no key for it)
 // Touch controls to draw over the picture (touch_layout.cpp, platform_android_input.cpp): circles at x, y (0..1
 // across the landscape screen), radius r (a fraction of its height), opacity alpha. 0 where nothing is drawn.
 struct OverlayShape {

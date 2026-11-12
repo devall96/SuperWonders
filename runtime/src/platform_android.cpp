@@ -132,6 +132,8 @@ void yield() {
     }
     for (int k = 0; k < 64; k++) asm volatile("yield" ::: "memory");
 }
+bool wait_vblank() { return false; }
+bool fast_forward() { return false; }
 void set_thread_name(const char* name) { pthread_setname_np(pthread_self(), name); }
 int64_t current_thread_id() { return gettid(); }
 
