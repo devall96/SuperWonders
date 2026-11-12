@@ -15,6 +15,7 @@
 
 #include <nx/runtime.h>
 
+#include "nvn/nvn_vk.h"
 #include "overlay/overlay.h"
 #include "overlay/settings.h"
 #include "platform.h"
@@ -69,6 +70,7 @@ void apply_settings(const overlay::Settings& s, bool persist) {
     nx::set_game_language(s.game_language);
     set_memory_limit_gb(s.memory_limit_gb);
     setenv("NX_LOW_VRAM_PROFILE", s.low_vram_profile ? "1" : "0", 1);
+    nvn::set_fsr(s.upscaler == 1, float(s.fsr_sharpness) / 100.0f);
     if (s.fullscreen != before.fullscreen || s.width != before.width || s.height != before.height ||
         s.always_on_top != before.always_on_top)
         post_to_main([s] {
