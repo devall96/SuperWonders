@@ -7,9 +7,11 @@
 // patch_int_inputs() rewrites a module so the chosen locations are declared as ivec4/uvec4 and every load is bitcast
 // back to the float the rest of the code expects: the Maxwell semantics exactly.
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 
 #include "nvn_pipeline.h"
 
@@ -21,6 +23,7 @@ enum : uint32_t {
     OpTypeInt = 21, OpTypeFloat = 22, OpTypeVector = 23, OpTypePointer = 32, OpFunction = 54, OpVariable = 59,
     OpLoad = 61, OpAccessChain = 65, OpInBoundsAccessChain = 66, OpDecorate = 71, OpBitcast = 124,
     DecorationLocation = 30, StorageInput = 1,
+    OpEntryPoint = 15,
 };
 
 struct Inst {
@@ -413,6 +416,72 @@ uint32_t unwritten_inputs(const ShaderInfo* vs, const ShaderInfo* fs) {
     return mask;
 }
 
+// Vertex outputs start as (0, 0, 0, 1), Maxwell's value for every component the shader does not write. The game's
+// compiler relies on it: the course ground's vertex shaders write only the 1.0 of a constant normal, tangent and
+// bitangent (`n.z = 1.0`, `t.x = 1.0`, `b.y = 1.0`) and leave the zeros to the hardware. In Vulkan an unwritten
+// component is undefined: NVIDIA gave 0, AMD gave what the register held, and normalising those vectors gave NaN (the
+// ground and characters flat green on the AMD Windows driver, black on RADV). The TotK recomp found the same rule
+// (valentderah/totk-pc-recomp, docs/maxwell.md 1.2, translator patch 0006, MIT). Every Location output vec4 of the
+// vertex entry point is stored (0, 0, 0, 1) at the top of main; the shader's own writes follow. NX_INIT_VS_OUTPUTS=0:
+// off (bisecting).
+bool init_vertex_outputs(const std::vector<uint32_t>& in, std::vector<uint32_t>& out) {
+    enum : uint32_t {
+        OpConstant = 43, OpConstantComposite = 44, OpLabel = 248, OpStore = 62, ModelVertex = 0, StorageOutput = 3,
+        DecorationBuiltIn = 11,
+    };
+    if (in.size() < 5) return false;
+    std::vector<Inst> insts;
+    for (size_t i = 5; i < in.size();) {
+        uint32_t len = in[i] >> 16;
+        if (!len || i + len > in.size()) return false;
+        insts.push_back({i, in[i] & 0xffff, len});
+        i += len;
+    }
+    uint32_t entry = 0, f32 = 0, v4 = 0;
+    std::set<uint32_t> located, builtin;
+    std::map<uint32_t, uint32_t> pointee;  // pointer type -> pointee (Output pointers)
+    std::vector<uint32_t> outputs;
+    size_t first_function = in.size();
+    for (const Inst& n : insts) {
+        const uint32_t* w = &in[n.at];
+        if (n.op == OpEntryPoint && n.len >= 3 && w[1] == ModelVertex) entry = w[2];
+        else if (n.op == OpDecorate && n.len >= 4 && w[2] == DecorationLocation) located.insert(w[1]);
+        else if (n.op == OpDecorate && n.len >= 3 && w[2] == DecorationBuiltIn) builtin.insert(w[1]);
+        else if (n.op == OpTypeFloat && n.len == 3 && w[2] == 32) f32 = w[1];
+        else if (n.op == OpTypeVector && n.len == 4 && w[2] == f32 && w[3] == 4 && f32) v4 = w[1];
+        else if (n.op == OpTypePointer && n.len == 4 && w[2] == StorageOutput) pointee[w[1]] = w[3];
+        else if (n.op == OpVariable && n.len >= 4 && w[3] == StorageOutput) {
+            if (auto p = pointee.find(w[1]); p != pointee.end() && p->second == v4 && v4) outputs.push_back(w[2]);
+        } else if (n.op == OpFunction) {
+            first_function = std::min(first_function, n.at);
+        }
+    }
+    std::vector<uint32_t> targets;
+    for (uint32_t v : outputs)
+        if (located.count(v) && !builtin.count(v)) targets.push_back(v);
+    if (!entry || targets.empty() || first_function == in.size()) return false;
+    uint32_t bound = in[3], zero = bound++, one = bound++, init = bound++;
+    out.assign(in.begin(), in.begin() + first_function);
+    out.insert(out.end(), {(4u << 16) | OpConstant, f32, zero, 0u, (4u << 16) | OpConstant, f32, one, 0x3f800000u,
+                           (7u << 16) | OpConstantComposite, v4, init, zero, zero, zero, one});
+    bool in_entry = false, stored = false;
+    for (const Inst& n : insts) {
+        if (n.at < first_function) continue;
+        const uint32_t* w = &in[n.at];
+        if (n.op == OpFunction) in_entry = w[2] == entry;
+        // The stores go after the entry block's OpLabel and its OpVariable declarations (they must come first).
+        if (in_entry && !stored && n.op != OpLabel && n.op != OpVariable && n.op != OpFunction &&
+            n.op != 55 /* OpFunctionParameter */) {
+            for (uint32_t v : targets) out.insert(out.end(), {(3u << 16) | OpStore, v, init});
+            stored = true;
+        }
+        out.insert(out.end(), w, w + n.len);
+    }
+    if (!stored) return false;
+    out[3] = bound;
+    return true;
+}
+
 std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, bool* int_inputs) {
     std::vector<uint32_t> code = s->spirv, next;  // each pass reads `code` and leaves its result in `next`
     bool is_int = kinds && patch_int_inputs(code, kinds, next);
@@ -431,6 +500,11 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
     }
     if (clamp_uniform_indices(code, next, nullptr)) code.swap(next);
     if (zero_function_locals(code, next)) code.swap(next);
+    static const bool init_outputs = [] {
+        const char* e = std::getenv("NX_INIT_VS_OUTPUTS");
+        return !(e && e[0] == '0');
+    }();
+    if (init_outputs && s->stage == ShaderStage::Vertex && init_vertex_outputs(code, next)) code.swap(next);
     return code;
 }
 
