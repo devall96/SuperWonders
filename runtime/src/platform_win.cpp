@@ -82,7 +82,11 @@ void start_thread(ThreadFn fn, void* arg, size_t stack_size) {
 }
 
 void exit_thread() { ExitThread(0); }
-void exit_process(int code) { nx::nvn::flush_pipeline_cache(); ExitProcess(UINT(code)); }
+void exit_process(int code) {
+    nx::nvn::flush_pipeline_cache();
+    std::fflush(stderr);  // buffered (log_line); ExitProcess does not flush the C runtime
+    ExitProcess(UINT(code));
+}
 void sleep_ns(int64_t ns) {
     // A high-resolution waitable timer (Windows 10 1803+): Sleep rounds to the system tick (1 to 15.6 ms), and the
     // 60 Hz pacing jittered by that much.
@@ -187,7 +191,20 @@ bool make_dirs(const std::string& path) {
     return !ec;
 }
 
-void log_line(const char* line) { std::fprintf(stderr, "%s\n", line); }
+// stderr is unbuffered: redirected to a file it cost ~6 ms a line (measured), and the frame-stats burst every 300
+// presents (14 lines, on the game's render thread) stalled the game 75-150 ms. Unless stderr is a console, it gets a
+// buffer; nx.log (flushed per line, loader.cpp) is the complete record. Without a stderr handle (a GUI launch),
+// nothing is written. NX_STDERR_UNBUFFERED=1: as before.
+void log_line(const char* line) {
+    static const int mode = [] {
+        HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+        if (!h || h == INVALID_HANDLE_VALUE) return 0;  // nowhere to write
+        if (GetFileType(h) != FILE_TYPE_CHAR && !std::getenv("NX_STDERR_UNBUFFERED"))
+            std::setvbuf(stderr, nullptr, _IOFBF, 64 * 1024);
+        return 1;
+    }();
+    if (mode) std::fprintf(stderr, "%s\n", line);
+}
 
 std::string data_root() {
     const char* r = std::getenv("NX_DATA_ROOT");
