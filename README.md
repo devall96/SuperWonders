@@ -2,7 +2,7 @@
 
 I'm working on SuperWonders, an experimental Windows x64 static recompilation of *Super Mario Bros. Wonder* (Nintendo Switch, base version 1.0.0) for native execution on PC. I started from the DKB/TOTK recompilation framework and have been adapting its runtime and graphics support for Wonder. The Windows graphics backend uses Vulkan.
 
-This repository contains source code and project documentation. It does not contain the builder package, the game, game assets, a game dump, keys, firmware, or a compiled game. The separate Windows GUI Builder is distributed through [GitHub Releases](https://github.com/vfjoo888/SuperWonders/releases).
+This repository contains source code and project documentation. It does not contain the builder package, the game, game assets, a game dump, firmware, or a compiled game. The separate Windows GUI Builder is distributed through [GitHub Releases](https://github.com/vfjoo888/SuperWonders/releases).
 
 ## What I've done
 
@@ -15,7 +15,7 @@ This repository contains source code and project documentation. It does not cont
 - The Controls section has Xbox/DualSense and Nintendo button-layout presets. It also lets me remap keyboard keys and controller buttons. The Windows runtime includes keyboard, XInput, and DualSense input support.
 - The Overlay section has separate toggles for FPS, 1% lows, game speed, and a frametime graph, with four corner-position options.
 - The System section includes a configurable process memory limit and a Low VRAM profile. The memory limit controls the process's system-memory guard; it is not a dedicated VRAM limit. The Low VRAM profile can store decoded ASTC textures as BC3 instead of expanding them to RGBA8 when the GPU does not support ASTC. This can reduce texture memory use, with a possible image-quality tradeoff.
-- I prepared a separate Windows GUI Builder package. Users can provide extracted ExeFS/RomFS folders or a base NSP/XCI plus their own `prod.keys`; the builder performs extraction locally.
+- I prepared a separate Windows GUI Builder package. Users provide their own extracted ExeFS/RomFS folders.
 - I changed the Windows build so the game can be started directly from its executable, with an orange-flower application icon.
 
 ## Testing and compatibility
@@ -24,7 +24,7 @@ I have tested the project on a Windows PC with an **NVIDIA GeForce RTX 5060 Ti**
 
 **AMD and Intel graphics cards have not been tested**, so I can't confirm compatibility with them. Other systems and GPUs may behave differently. Controller rumble is not currently supported.
 
-The recompilation targets the game's base version **1.0.0**. The builder accepts NSP/XCI files but does not yet identify and display the game version automatically. Updates and DLC are not supported by this input path.
+The recompilation targets the game's base version **1.0.0**. The builder uses the extracted folders provided by the user and does not identify the game version automatically. Updates and DLC are not supported.
 
 ## Minimum hardware (provisional)
 
@@ -54,9 +54,9 @@ I used AI tools extensively to help write and revise the code, build scripts, an
 
 Download the Windows GUI Builder ZIP from [GitHub Releases](https://github.com/vfjoo888/SuperWonders/releases), extract it to a writable folder, and run `Start WonderBuilder.cmd`.
 
-In the builder, choose either your own extracted ExeFS and RomFS folders, or choose **NSP / XCI file** and provide your own base-game dump plus the `prod.keys` file from your own console. The builder extracts NSP/XCI data locally. Choose an output folder and click **Build game**; when it finishes, start `wonder.exe` from that output folder.
+In the builder, select your own extracted ExeFS folder (containing `main` and `sdk`) and RomFS folder. Choose an output folder and click **Build game**; when it finishes, start `wonder.exe` from that folder.
 
-The builder ZIP includes its portable Windows build tools, but no game files or keys. You must provide your own legally obtained game files. I don't provide instructions for obtaining game files, keys, or firmware. Do not share the generated game output, because it contains material from your own game dump.
+The builder ZIP includes its portable Windows build tools, but no game files. You must provide your own legally obtained extracted game data. I don't provide instructions for obtaining game files or firmware. Do not share the generated game output, because it contains material from your own game dump.
 
 To update a build, keep the builder folder and output folder, extract the newer builder package over the old builder files, and build again with the same inputs and output path. The builder can reuse unchanged extraction and compilation caches.
 

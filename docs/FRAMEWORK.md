@@ -181,11 +181,8 @@ Both sides are little endian, so no byte swapping. Details in [docs/FINDINGS.md]
 
 ### Extraction
 
-```powershell
-nstool -x / private\extract\upd_nsp "private\update\<update>.nsp"
-nstool -k private\keys\prod.keys --tik <update .tik> -x /0 private\extract\exefs <update program .nca>
-python tools\nso2bin.py private\extract\exefs\main private\analysis\main.bin
-```
+The recompilation workflow starts from user-provided extracted ExeFS and RomFS folders. The builder does not process
+console game-container formats or console keys. Keep all extracted game data private and outside the repository.
 
 ## Repository layout
 

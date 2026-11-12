@@ -1,24 +1,7 @@
 # Super Mario Bros. Wonder: what the game is made of
 
-Facts measured on our own cartridge dump (1.0.0, 010015100B514000). Tools and numbers here are reproducible with
-the commands below; everything derived from the game stays in `private/wonder/` (never committed).
-
-## Extraction (macOS)
-
-nstool v1.9.2 has a macOS arm64 release (`gh release download v1.9.2 -R jakcron/nstool`). Keys from our own
-console (Lockpick_RCM) in `private/keys/prod.keys`.
-
-```sh
-N=private/tools/nstool; K=private/keys/prod.keys; W=private/wonder
-$N -k $K --fstree MarioWonder.xci                    # gamecard: update/ (empty), normal/, secure/
-$N -k $K -x /secure $W/secure MarioWonder.xci         # 4 NCAs; the 3.7 GB one is the program
-$N -k $K -x /0 $W/exefs $W/secure/<program>.nca       # main, main.npdm, rtld, sdk
-$N -k $K -x /1 $W/romfs $W/secure/<program>.nca       # 3.5 GB
-python3 -m venv private/venv && private/venv/bin/pip install lz4 capstone unicorn
-private/venv/bin/python tools/probe.py $W/exefs
-```
-
-The virtual path is `/secure`, not `gamecard:/secure`. No update is on the cartridge, so the ExeFS is the base game.
+Facts measured from the base game version 1.0.0 (title ID 010015100B514000). Analysis used local extracted modules;
+all game-derived data stays in `private/wonder/` and is never committed.
 
 ## Modules
 

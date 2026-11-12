@@ -355,9 +355,8 @@ screen yet: the Vulkan side is next). What it took, in boot order:
 
 ### 2026-09-28
 
-**Extraction (Mac).** nstool v1.9.2 (macOS arm64 release) with our own `prod.keys`:
-`nstool -x /secure` on the XCI, then `-x /0` (ExeFS) and `-x /1` (RomFS) on the program NCA. The cartridge has no
-update partition: this is 1.0.0. Output in `private/wonder/{exefs,romfs}` (3.5 GB). Steps in WONDER.md.
+**Initial analysis.** The base game modules and RomFS were examined locally from previously extracted files and
+remain in the private working data directory. No game content is tracked by Git.
 
 **Probe.** NVN (`NintendoSDK_NVN-16_2_0`), SDK 16.2.0 (Hades: 9.3). Modules: `rtld`, `main` (53.6 MB), `sdk`
 (13.3 MB), no `subsdk`. Engine: sead + NintendoWare G3d2/Ui2d/Vfx2/Font, Pia (online). 1,107 imports in `main`,

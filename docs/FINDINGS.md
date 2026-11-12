@@ -2,11 +2,9 @@
 
 Title 0100535012974000, update v589824 (0100535012974800). SDK 9.3.0, NCA SdkAddon 9.6.0.
 
-## Extraction (Windows)
+## Input modules
 
-- LibHac/hactoolnet is gone from GitHub; hactool 1.4.0 chokes on current prod.keys. Use **nstool v1.9.2** (jakcron).
-- `nstool -x / <out> game.nsp` unpacks the NSP (no keys needed).
-- `nstool -k prod.keys --tik <update .tik> -x /0 <out> <update program .nca>` gives the full ExeFS (the update's ExeFS is complete, not a delta). RomFS (partition 1) needs `--basenca`.
+- The recompilation and analysis utilities consume already extracted game modules.
 - `tools/nso2bin.py` decompresses an NSO (LZ4) into a flat image.
 
 ## Modules (ExeFS of the update)

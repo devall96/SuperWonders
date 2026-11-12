@@ -6,8 +6,8 @@ Bug reports, testing on other hardware and code contributions are welcome.
 
 Nothing owned by Nintendo may be committed or attached to an issue or pull request:
 
-- no copies of the game in any form (`.xci`, `.nsp`, `.nca`, `.nso`, RomFS or ExeFS contents)
-- no keys or firmware (`prod.keys`, `title.keys`, ...)
+- no copies of the game in any form (game containers, modules, RomFS or ExeFS contents)
+- no console credentials or firmware
 - no generated code from the game (`private/wonder/gen`), no translated shaders (`private/wonder/spirv`), no
   APK or data zip built from a dump (they contain the game's code and data)
 - no game assets: textures, models, music, text, fonts
