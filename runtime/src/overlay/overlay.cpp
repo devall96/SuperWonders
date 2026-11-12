@@ -241,12 +241,13 @@ void mouse_wheel(float dy) {
 void text_input(uint32_t ch) {
     if (g_open) push({Event::Text, 0, KeyNone, false, 0, 0, ch});
 }
-void toggle() {
-    bool now = !g_open.load();
-    g_open = now;
+void set_open(bool open, const char* why) {
+    if (g_open.exchange(open) == open) return;
     g_input_frames = 30;
-    log("overlay: menu %s", now ? "opened" : "closed");
+    log("overlay: menu %s (%s)", open ? "opened" : "closed", why);
 }
+
+void toggle() { set_open(!g_open.load(), "toggle"); }
 bool is_open() { return g_open; }
 bool wants_mouse() { return g_open; }
 bool wants_keyboard() { return g_open; }
@@ -334,7 +335,7 @@ ImDrawData* build_frame(uint32_t w, uint32_t h) {
                     break;
                 }
                 if (e.key == KeyEscape && e.down && g_capture < 0 && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup)) {
-                    g_open = false;
+                    set_open(false, "Esc");
                     break;
                 }
                 if (ImGuiKey k = imgui_key(e.key); k != ImGuiKey_None) io.AddKeyEvent(k, e.down);
@@ -346,6 +347,13 @@ ImDrawData* build_frame(uint32_t w, uint32_t h) {
         }
     }
     if (changed) settings_changed(true);
+    // B on a controller backs out: inside a dropdown or an edit ImGui handles it; at the top it closes the menu.
+    static uint64_t previous_pad = 0;
+    const uint64_t pad = g_pad_buttons.load();
+    if (g_open && (pad & ~previous_pad & plat::kB) && g_capture < 0 && !ImGui::IsAnyItemActive() &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup))
+        set_open(false, "B");
+    previous_pad = pad;
     feed_pad(io);
     if (g_input_frames > 0) g_input_frames--;
 
@@ -358,8 +366,9 @@ ImDrawData* build_frame(uint32_t w, uint32_t h) {
     if (open) {
         MenuContext c{g_settings, g_host, g_capture, g_tab_request.exchange(-1), open, scale, appearing};
         draw_menu(c);
+        if (c.tab_request >= 0 && c.tab_request != g_tab) log("overlay: tab %d", c.tab_request);
         if (c.tab_request >= 0) g_tab = c.tab_request;
-        if (!open) g_open = false, g_capture = -1;
+        if (!open) set_open(false, "menu"), g_capture = -1;
     }
     ImGui::Render();
     return ImGui::GetDrawData();
