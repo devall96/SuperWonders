@@ -27,15 +27,19 @@ uint64_t g_pipelines = 0, g_pipeline_ns = 0, g_astc = 0, g_astc_ns = 0;
 
 void save_pipeline_cache_at_exit() { pipeline_cache_save(true); }
 
-void save_pipeline_cache(bool force) {
-    if (!g_cache || !g_cache_dirty.load(std::memory_order_acquire)) return;
+std::atomic<bool> g_cache_saving{false};
+
+// On the background writer (periodic saves) or, at shutdown, on the caller after the writer is idle.
+void write_pipeline_cache(bool force) {
+    // Cleared first: a pipeline created while the data is read marks it dirty again for the next save.
+    g_cache_dirty.store(false, std::memory_order_release);
     size_t n = 0;
-    if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, nullptr) != VK_SUCCESS || !n) return;
+    if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, nullptr) != VK_SUCCESS || !n) return note_pipeline_cache_changed();
     // Vulkan drivers generally grow the serialized cache as new entries are added. Avoid rewriting a large cache
     // every few seconds when its serialized size is unchanged; the explicit shutdown flush forces same-size updates.
-    if (!force && n <= g_saved_size) return;
+    if (!force && n <= g_saved_size) return note_pipeline_cache_changed();  // still owed: the shutdown save writes it
     std::vector<uint8_t> data(n);
-    if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, data.data()) != VK_SUCCESS) return;
+    if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, data.data()) != VK_SUCCESS) return note_pipeline_cache_changed();
     std::string tmp = g_path + ".tmp";
     if (FILE* f = plat::fopen_utf8(tmp, "wb")) {
         bool ok = std::fwrite(data.data(), 1, n, f) == n;
@@ -43,10 +47,25 @@ void save_pipeline_cache(bool force) {
         std::remove(g_path.c_str());
         if (ok && std::rename(tmp.c_str(), g_path.c_str()) == 0) {
             g_saved_size = n;
-            g_cache_dirty.store(false, std::memory_order_release);
             log("nvn/vk: pipeline cache saved (%zu bytes)%s", n, force ? " at shutdown" : "");
+            return;
         }
     }
+    note_pipeline_cache_changed();  // not written: try again next time
+}
+
+void save_pipeline_cache(bool force) {
+    if (!g_cache || !g_cache_dirty.load(std::memory_order_acquire)) return;
+    if (force) {
+        wait_background_writes();
+        write_pipeline_cache(true);
+        return;
+    }
+    if (g_cache_saving.exchange(true)) return;  // the last one is still being written
+    background_write([] {
+        write_pipeline_cache(false);
+        g_cache_saving.store(false);
+    });
 }
 
 }  // namespace
@@ -98,7 +117,7 @@ void creation_log(uint64_t frames) {
             (unsigned long long)g_astc, double(g_astc_ns) / 1e6, (unsigned long long)g_pipelines_skipped);
     g_pipelines = g_pipeline_ns = g_astc = g_astc_ns = g_pipelines_skipped = 0;
     static uint64_t windows = 0;
-    if (++windows % 10 == 0) pipeline_cache_save(), save_pipeline_keys();
+    if (++windows % 10 == 0) pipeline_cache_save(), save_pipeline_keys();  // on the background writer
 }
 
 }  // namespace nx::nvn
