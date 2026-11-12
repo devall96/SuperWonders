@@ -348,13 +348,21 @@ void prepare_shader_catalog() {
             if (const ShaderInfo* info = get_info(index)) m = make_module(info, unwritten);
         return m;
     };
-    // Programs go to the workers 64 at a time; progress and the cache are saved between batches, on this thread.
+    // Programs go to the workers 64 at a time; progress is shown between batches. The cache (100-240 MB) is saved at
+    // most every 30 s: read back after every batch, it competed with the workers compiling into it.
+    // NX_PREP_SAVE_SECONDS=<n>: another interval (0: after every batch, as before).
+    static const uint64_t save_ns = [] {
+        const char* e = std::getenv("NX_PREP_SAVE_SECONDS");
+        return uint64_t(e ? std::strtoull(e, nullptr, 10) : 30) * 1'000'000'000ull;
+    }();
     std::vector<std::function<void()>> batch;
+    const uint64_t prep_start = plat::monotonic_ns();
+    uint64_t saved_at = prep_start;
     const auto flush = [&] {
         run_parallel(batch);
         batch.clear();
         plat::shader_compile_progress(compiled.load(), total, true);
-        pipeline_cache_save();
+        if (plat::monotonic_ns() - saved_at >= save_ns) pipeline_cache_save(), saved_at = plat::monotonic_ns();
     };
 
     for (const ProgramRec& program : programs) {
@@ -411,8 +419,9 @@ void prepare_shader_catalog() {
     pipeline_cache_save();
     write_marker(marker, fingerprint, attempted, compiled.load());
     plat::shader_compile_progress(compiled.load(), total, false);
-    log("nvn/vk: startup shader preparation finished: %llu/%llu programs compiled, %llu failed",
-        (unsigned long long)compiled.load(), (unsigned long long)total, (unsigned long long)failed.load());
+    log("nvn/vk: startup shader preparation finished: %llu/%llu programs compiled, %llu failed, in %.1f s",
+        (unsigned long long)compiled.load(), (unsigned long long)total, (unsigned long long)failed.load(),
+        double(plat::monotonic_ns() - prep_start) / 1e9);
 }
 
 }  // namespace nx::nvn
