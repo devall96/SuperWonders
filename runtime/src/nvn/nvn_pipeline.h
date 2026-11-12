@@ -121,6 +121,9 @@ bool patch_int_textures(const std::vector<uint32_t>& in, const std::map<uint32_t
                         std::vector<uint32_t>& out);
 // Function-local variables without an initializer start at 0 (nvn_spirv_locals.cpp), as on Maxwell/NVIDIA.
 bool zero_function_locals(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
+// nvn_spirv_unused.cpp: declarations no shader uses that trip a device feature or limit (interlock, cull distance).
+bool strip_unused_interlock(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
+bool drop_unused_cull_distance(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
 // The code of a stage's module: its SPIR-V with every patch above that applies (`kinds` as patch_int_inputs, or
 // null; `unwritten` as default_unwritten_inputs). `int_inputs` gets whether patch_int_inputs changed it.
 std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, bool* int_inputs);
