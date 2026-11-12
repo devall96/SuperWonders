@@ -39,7 +39,7 @@ struct PcMenuState {
     int language = 0;  // English, Italian, German, French
     int game_language = 0;  // Language returned to the game at startup
     int memory_limit_gb = 8;  // Process private-commit guard; not a dedicated VRAM budget
-    int controller_preset = 0;  // Xbox / DualSense, Nintendo
+    int controller_preset = 1;  // 0 Xbox / DualSense (A at the bottom), 1 Nintendo (A on the right, the Switch's own layout: default)
     bool muted = false;
     bool fullscreen = false;
     bool always_on_top = false;
