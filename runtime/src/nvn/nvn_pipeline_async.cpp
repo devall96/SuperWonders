@@ -81,6 +81,10 @@ std::shared_ptr<AsyncPipeline> compile_pipeline_async(std::shared_ptr<PipelineBu
 }
 
 void run_parallel(std::vector<std::function<void()>>& jobs) {
+    if (!async_pipelines()) {  // NX_ASYNC_PIPELINES=0: one after another on this thread, as before (bisecting)
+        for (auto& job : jobs) job();
+        return;
+    }
     struct Count {
         std::mutex lock;
         std::condition_variable cv;
