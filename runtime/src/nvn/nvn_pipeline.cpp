@@ -354,6 +354,27 @@ void record_pipeline_key(const PipelineKey& key) {
     }
 }
 
+namespace {
+
+// The file write of save_pipeline_keys: on the background writer, or on the caller at shutdown.
+void write_pipeline_keys(const std::string& path, const PipelineKeysHeader& h,
+                         const std::vector<PipelineKeysRecord>& records, bool force) {
+    const std::string tmp = path + ".tmp";
+    FILE* f = plat::fopen_utf8(tmp, "wb");
+    if (!f) return;
+    bool ok = std::fwrite(&h, 1, sizeof h, f) == sizeof h;
+    if (ok && !records.empty())
+        ok = std::fwrite(records.data(), sizeof(PipelineKeysRecord), records.size(), f) == records.size();
+    ok = std::fclose(f) == 0 && ok;
+    std::remove(path.c_str());
+    if (ok && std::rename(tmp.c_str(), path.c_str()) == 0)
+        log("nvn/vk: saved %llu pipeline recipes%s", (unsigned long long)records.size(), force ? " at shutdown" : "");
+    else
+        log("nvn/vk: saving pipeline recipes to %s failed", path.c_str());
+}
+
+}  // namespace
+
 void save_pipeline_keys(bool force) {
     if (!g_pipeline_keys_dirty && !force) return;
     open_pipeline_keys_path();
@@ -362,20 +383,16 @@ void save_pipeline_keys(bool force) {
     h.record_size = sizeof(PipelineKeysRecord);
     h.count = g_pipeline_key_records.size();
     h.vendor = g_pipeline_vendor, h.device = g_pipeline_device;
-    const std::string tmp = g_pipeline_keys_path + ".tmp";
-    FILE* f = plat::fopen_utf8(tmp, "wb");
-    if (!f) return;
-    bool ok = std::fwrite(&h, 1, sizeof h, f) == sizeof h;
-    if (ok && !g_pipeline_key_records.empty())
-        ok = std::fwrite(g_pipeline_key_records.data(), sizeof(PipelineKeysRecord), g_pipeline_key_records.size(), f) ==
-             g_pipeline_key_records.size();
-    ok = std::fclose(f) == 0 && ok;
-    std::remove(g_pipeline_keys_path.c_str());
-    if (ok && std::rename(tmp.c_str(), g_pipeline_keys_path.c_str()) == 0) {
-        g_pipeline_keys_dirty = false;
-        log("nvn/vk: saved %llu pipeline recipes%s", (unsigned long long)g_pipeline_key_records.size(),
-            force ? " at shutdown" : "");
+    g_pipeline_keys_dirty = false;
+    if (force) {
+        wait_background_writes();  // an older periodic save must not land after this one
+        write_pipeline_keys(g_pipeline_keys_path, h, g_pipeline_key_records, true);
+        return;
     }
+    // A copy of the records (~9 MB, about a millisecond) so the replay can keep adding while the file is written.
+    background_write([path = g_pipeline_keys_path, h, records = g_pipeline_key_records] {
+        write_pipeline_keys(path, h, records, false);
+    });
 }
 
 void prepare_recorded_pipelines() {
