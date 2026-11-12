@@ -1,6 +1,7 @@
 // Worker threads for pipeline compiles (nvn_pipeline_async.h).
 #include "nvn_pipeline_async.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <deque>
 #include <thread>
@@ -99,6 +100,60 @@ void run_parallel(std::vector<std::function<void()>>& jobs) {
         });
     std::unique_lock l(count.lock);
     count.cv.wait(l, [&] { return count.left == 0; });
+}
+
+namespace {
+
+struct Writer {
+    std::mutex lock;
+    std::condition_variable cv, idle;
+    std::deque<std::function<void()>> queue;
+    bool busy = false;
+    Writer() {
+        std::thread([this] {
+            for (;;) {
+                std::function<void()> job;
+                {
+                    std::unique_lock l(lock);
+                    cv.wait(l, [&] { return !queue.empty(); });
+                    job = std::move(queue.front());
+                    queue.pop_front();
+                    busy = true;
+                }
+                job();
+                std::lock_guard l(lock);
+                busy = false;
+                if (queue.empty()) idle.notify_all();
+            }
+        }).detach();
+    }
+};
+
+std::atomic<Writer*> g_writer{nullptr};
+Writer& writer() {
+    static Writer* w = new Writer();  // leaked like the pool
+    g_writer.store(w, std::memory_order_release);
+    return *w;
+}
+
+}  // namespace
+
+void background_write(std::function<void()> job) {
+    if (!async_pipelines()) return job();  // NX_ASYNC_PIPELINES=0: on this thread, as before
+    Writer& w = writer();
+    {
+        std::lock_guard l(w.lock);
+        w.queue.push_back(std::move(job));
+    }
+    w.cv.notify_one();
+}
+
+void wait_background_writes() {
+    Writer* p = g_writer.load(std::memory_order_acquire);
+    if (!p) return;  // nothing was ever queued: no thread to start at shutdown
+    Writer& w = *p;
+    std::unique_lock l(w.lock);
+    w.idle.wait(l, [&] { return w.queue.empty() && !w.busy; });
 }
 
 }  // namespace nx::nvn
