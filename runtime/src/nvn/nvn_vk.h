@@ -31,6 +31,8 @@ struct GpuImage {
     bool storage = false;          // created with VK_IMAGE_USAGE_STORAGE_BIT (compute shaders write it)
     bool mutable_format = true;
     uint64_t rendered_at = 0;      // the pass-end serial of the last pass that rendered into it (nvn_draw.cpp, G4)
+    uint64_t rendered_frame = 0;   // g_frame + 1 at that pass's end (0: never rendered): may a draw into it skip a frame
+
     // An R8 texture always read as (1, 1, 1, R) (a glyph cache): stored as RGBA8 (255, 255, 255, R) and sampled
     // without swizzle. MoltenVK returned alpha 0 for that view swizzle on a 2D-array view, so all text was invisible.
     bool alpha_from_r = false;
