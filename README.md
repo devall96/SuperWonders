@@ -20,7 +20,7 @@ This repository contains source code and project documentation. It does not cont
 
 ## Testing and compatibility
 
-I have tested the project on a Windows PC with an **NVIDIA GeForce RTX 5060 Ti**. So far, I have played only in the tutorial area and checked several internal-resolution settings there. I haven't comprehensively tested the rest of the game, including later worlds, courses, cutscenes, and edge cases.
+I have tested the project on a Windows PC with an **NVIDIA GeForce RTX 5060 Ti**. So far, I have played only in the tutorial area and W1. I haven't comprehensively tested the rest of the game, including later worlds, courses, cutscenes, and edge cases.
 
 **AMD and Intel graphics cards have not been tested**, so I can't confirm compatibility with them. Other systems and GPUs may behave differently. Controller rumble is not currently supported.
 
@@ -40,7 +40,11 @@ These are preliminary requirements inferred from the build and runtime, not a gu
 
 I'm planning to add support for ultrawide **21:9** and super-ultrawide **32:9** displays.
 
-A Linux port may be a future project after I have improved and tested the Windows experience. I don't have a Linux system, so I will need someone to test it actively. Android is substantially more complicated and may be considered later.
+A 4k internal resolution option is on the way.
+
+A Linux port may be a future project after I have improved and tested the Windows experience. I don't have a Linux system, so I will need someone to test it actively. 
+
+Android is substantially more complicated and may be considered later.
 
 ## AI assistance
 
