@@ -141,7 +141,7 @@ void load_player_settings() {
         SDL_SCANCODE_LEFT, SDL_SCANCODE_UP, SDL_SCANCODE_RIGHT, SDL_SCANCODE_DOWN,
     };
     for (size_t a = 0; a < overlay::kControlCount; ++a)
-        s.keyboard_bindings[a] = keys[a], s.controller_bindings[a] = overlay::default_controller_binding(a, 0);
+        s.keyboard_bindings[a] = keys[a], s.controller_bindings[a] = overlay::default_controller_binding(a, s.controller_preset);
     bool found = overlay::load_settings(settings_path(), s);
     if (const char* e = std::getenv("NX_MEM_LIMIT_GB"); e && std::atof(e) > 0) s.memory_limit_gb = std::atoi(e);
     apply_settings(s, false);
