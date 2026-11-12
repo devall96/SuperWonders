@@ -211,7 +211,7 @@ void frame_sig_draw(const Targets& t, bool indexed, uint32_t count, uint32_t ins
             if (img && img->rendered && watch.find('+') != std::string::npos) s += explain_texture_slot(handles[k]);
         }
         for (int n = 0; n < 18; n++)
-            if (const Range& r = g_state.uniforms[4][n]; r.address && r.size)
+            if (const Range& r = g_state.uniforms[1][n]; r.address && r.size)
                 if (const uint8_t* p = guest_bytes(r.address)) {
                     char b[64];
                     std::snprintf(b, sizeof b, " c%d=%llx:%08x", n, (unsigned long long)r.address,
@@ -242,7 +242,7 @@ void frame_sig_draw(const Targets& t, bool indexed, uint32_t count, uint32_t ins
     if (indexed || count > 6 || instances != 1 || g_sig.passes.size() > 2000) return;
     uint32_t u = 2166136261u;
     for (int n = 0; n < 18; n++)
-        if (const Range& r = g_state.uniforms[4][n]; r.address && r.size)
+        if (const Range& r = g_state.uniforms[1][n]; r.address && r.size)
             if (const uint8_t* p = guest_bytes(r.address)) u = fnv(u, p, std::min<uint64_t>(r.size, 4096));
     char b[64];
     std::snprintf(b, sizeof b, " %.6s>%llx:%08x", fs ? fs->hash.c_str() : "-",
