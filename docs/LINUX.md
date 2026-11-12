@@ -57,8 +57,9 @@ Shift B, J X, K Y, Q/E L/R, Z/C ZL/ZR, Enter +, Esc -; the first SDL gamepad is 
 
 ## Differences from Windows
 
-- **No F1 settings menu.** `pc_menu_win.cpp` is Win32 drawing code; there is no Linux menu yet, and no metrics
-  overlay. `pc-settings.ini` is not read. A portable menu (SDL or an in-frame overlay) is a follow-up.
+- **The F1 menu is the shared Dear ImGui overlay** (`runtime/src/overlay/`), the same as on Windows with
+  `NX_IMGUI_MENU` on: F1, Esc to close, or Minus + Plus on a controller; L / R switch tabs. Settings are in
+  `pc-settings.ini` (keyboard bindings as SDL scancodes). "Always on top" is unavailable on Wayland.
 - **Memory guard** reads `RssAnon + VmSwap` from `/proc/self/status` (the nearest thing to Windows' private commit;
   it leaves out the GPU driver's mappings).
 - **Address space.** The guest ranges are the Windows/Android ones (`NX_BASE` 0x40_0000_0000, heap 0x50, alias 0x58,
