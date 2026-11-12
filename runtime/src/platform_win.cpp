@@ -237,7 +237,7 @@ static overlay::Settings to_overlay(const PcMenuState& s) {
     o.metric_game_speed = s.metric_game_speed, o.metric_frametime_graph = s.metric_frametime_graph;
     o.overlay_position = s.overlay_position, o.controller_custom_mask = s.controller_custom_mask;
     o.upscaler = s.upscaler, o.fsr_sharpness = s.fsr_sharpness, o.antialiasing = s.antialiasing;
-    o.anisotropy = s.anisotropy;
+    o.anisotropy = s.anisotropy, o.rumble = s.rumble;
     for (size_t i = 0; i < kPcControlCount; ++i)
         o.keyboard_bindings[i] = s.keyboard_bindings[i], o.controller_bindings[i] = s.controller_bindings[i];
     return o;
@@ -253,7 +253,7 @@ static PcMenuState from_overlay(const overlay::Settings& o) {
     s.metric_game_speed = o.metric_game_speed, s.metric_frametime_graph = o.metric_frametime_graph;
     s.overlay_position = o.overlay_position, s.controller_custom_mask = o.controller_custom_mask;
     s.upscaler = o.upscaler, s.fsr_sharpness = o.fsr_sharpness, s.antialiasing = o.antialiasing;
-    s.anisotropy = o.anisotropy;
+    s.anisotropy = o.anisotropy, s.rumble = o.rumble;
     for (size_t i = 0; i < kPcControlCount; ++i)
         s.keyboard_bindings[i] = o.keyboard_bindings[i], s.controller_bindings[i] = o.controller_bindings[i];
     return s;
@@ -350,7 +350,8 @@ static void save_pc_settings() {
          << "\noverlay_position=" << g_pc_settings.overlay_position
          << "\ncontroller_custom_mask=" << g_pc_settings.controller_custom_mask
          << "\nupscaler=" << g_pc_settings.upscaler << "\nfsr_sharpness=" << g_pc_settings.fsr_sharpness
-         << "\nantialiasing=" << g_pc_settings.antialiasing << "\nanisotropy=" << g_pc_settings.anisotropy << '\n';
+         << "\nantialiasing=" << g_pc_settings.antialiasing << "\nanisotropy=" << g_pc_settings.anisotropy
+         << "\nrumble=" << g_pc_settings.rumble << '\n';
     for (size_t i = 0; i < kPcControlCount; ++i)
         file << "keyboard_" << i << '=' << g_pc_settings.keyboard_bindings[i] << '\n'
              << "controller_" << i << '=' << g_pc_settings.controller_bindings[i] << '\n';
@@ -392,6 +393,7 @@ static void load_pc_settings() {
             g_pc_settings.antialiasing = std::clamp(value, 0, 1);
         else if (std::sscanf(line.c_str(), "anisotropy=%d", &value) == 1)
             g_pc_settings.anisotropy = std::clamp(value, 0, 16);
+        else if (std::sscanf(line.c_str(), "rumble=%d", &value) == 1) g_pc_settings.rumble = std::clamp(value, 0, 100);
         else {
             int index = -1, binding = -1;
             if (std::sscanf(line.c_str(), "keyboard_%d=%d", &index, &binding) == 2 &&
@@ -886,6 +888,23 @@ bool headless() {  // NX_HEADLESS (platform.h)
     return on;
 }
 
+// Player 1's pad for rumble: XInput's first controller, else the SDL gamepad read_pad opened.
+static std::mutex g_gamepad_lock;
+static SDL_Gamepad* g_gamepad = nullptr;
+static std::atomic<bool> g_have_xinput{false};
+
+void rumble(float low, float high) {
+    const float k = float(std::clamp(g_pc_settings.rumble, 0, 100)) / 100.0f;
+    const WORD lo = WORD(std::clamp(low * k, 0.0f, 1.0f) * 65535.0f), hi = WORD(std::clamp(high * k, 0.0f, 1.0f) * 65535.0f);
+    if (g_have_xinput) {
+        XINPUT_VIBRATION v{lo, hi};
+        XInputSetState(0, &v);
+        return;
+    }
+    std::lock_guard lk(g_gamepad_lock);
+    if (g_gamepad) SDL_RumbleGamepad(g_gamepad, lo, hi, 250);
+}
+
 void read_pad(PadState& p) {
     std::array<bool, kPcControlCount> physical{};
     XINPUT_STATE xs{};
@@ -915,9 +934,11 @@ void read_pad(PadState& p) {
         p.ry = dz(g.sThumbRY);
     }
     // SDL's HIDAPI backend reads DualSense directly; keep XInput as the first-choice path for Xbox pads.
+    g_have_xinput = have_xinput;
     if (!have_xinput) {
         SDL_UpdateGamepads();
-        static SDL_Gamepad* gamepad = nullptr;
+        std::lock_guard gamepad_lock(g_gamepad_lock);
+        SDL_Gamepad*& gamepad = g_gamepad;
         if (gamepad && !SDL_GamepadConnected(gamepad)) {
             SDL_CloseGamepad(gamepad);
             gamepad = nullptr;

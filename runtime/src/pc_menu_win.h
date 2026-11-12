@@ -54,6 +54,7 @@ struct PcMenuState {
     int fsr_sharpness = 25;    // overlay menu: RCAS stops x 100
     int antialiasing = 0;      // overlay menu: 0 off, 1 FXAA
     int anisotropy = 0;        // overlay menu: 0 the game's, else 2..16
+    int rumble = 100;          // overlay menu: rumble strength, percent
     std::array<int, kPcControlCount> keyboard_bindings = {
         VK_SPACE, VK_SHIFT, 'J', 'K', 'Q', 'E', 'Z', 'C', VK_RETURN, VK_ESCAPE, 'M', 'N',
         VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN,
