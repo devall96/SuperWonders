@@ -19,6 +19,7 @@ param(
     [double]$MinFps = 0,
     [double]$MaxMemGB = 5.0,
     [string]$Exe = "private\wonder\build\wonder.exe",
+    [double]$MemLimitGB = 8,             # NX_MEM_LIMIT_GB: the memory guard stops the game above this
     [switch]$KeepSave                    # default: the save is deleted first, so scripted input meets the same screens
 )
 $ErrorActionPreference = "Stop"
@@ -33,7 +34,7 @@ $frames = "private\wonder\frames"
 if (Test-Path $frames) { Remove-Item -Recurse -Force $frames }
 if (-not $KeepSave -and (Test-Path "private\wonder\user\save")) { Remove-Item -Recurse -Force "private\wonder\user\save" }
 
-$vars = @{ NX_LOG = "$run\nx.log"; NX_MEM_LIMIT_GB = "8"; NX_GPU = $Gpu }
+$vars = @{ NX_LOG = "$run\nx.log"; NX_MEM_LIMIT_GB = "$MemLimitGB"; NX_GPU = $Gpu }
 if ($Headless) { $vars.NX_HEADLESS = "1"; $vars.NX_MUTE = "1" }
 if ($Handheld) { $vars.NX_HANDHELD = "1" }
 if ($Script) { $vars.NX_INPUT_SCRIPT = $Script }
@@ -45,9 +46,10 @@ foreach ($k in $vars.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable(
 $t0 = Get-Date
 try {
     $p = Start-Process -FilePath $Exe -PassThru -RedirectStandardError "$run\stderr.txt" -WindowStyle Normal
+    $null = $p.Handle  # without the handle taken now, ExitCode stays empty after the process exits (a blank "exit")
     $exited = $p.WaitForExit($Seconds * 1000)
     if (-not $exited) { Stop-Process -Id $p.Id -Force; $p.WaitForExit() }
-    $code = if ($exited) { $p.ExitCode } else { "killed after $Seconds s (expected)" }
+    $code = if ($exited) { "exited by itself after $([int]((Get-Date) - $t0).TotalSeconds) s, code $($p.ExitCode)" } else { "killed after $Seconds s (expected)" }
 } finally {
     foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
 }
@@ -70,12 +72,15 @@ $presents = 60 * $fps.Count
 $mem = @($log | Select-String 'memory: ([\d.]+) GB \(peak ([\d.]+) GB' | ForEach-Object { [double]$_.Matches[0].Groups[2].Value })
 $peak = if ($mem.Count) { ($mem | Measure-Object -Maximum).Maximum } else { 0 }
 $crash = @($log | Select-String 'CRASH|GPU hang|fatal|over the .* limit')
+$guard = @($log | Select-String 'over the .* limit \(NX_MEM_LIMIT_GB\): stopping')
 $vkerr = @($log | Select-String 'nvn/vk: .* failed \(' )
 $gpuLine = ($log | Select-String 'nvn/vk: using GPU' | Select-Object -First 1)
 $present = ($log | Select-String 'nvn/vk: present mode' | Select-Object -First 1)
 
 $fail = @()
-if ($crash.Count) { $fail += "crash/hang: $($crash[0].Line)" }
+if ($guard.Count) { $fail += "memory guard stopped the game ($($guard[0].Line -replace '.*memory: ', '')); raise -MemLimitGB to let it run" }
+elseif ($crash.Count) { $fail += "crash/hang: $($crash[0].Line)" }
+elseif ($exited) { $fail += "the game exited by itself before $Seconds s" }
 if ($presents -lt $MinPresents) { $fail += "presents $presents < $MinPresents" }
 if ($peak -gt $MaxMemGB) { $fail += "peak memory $peak GB > $MaxMemGB" }
 if ($MinFps -gt 0 -and $median -lt $MinFps) { $fail += "median fps $median < $MinFps" }
