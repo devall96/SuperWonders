@@ -317,7 +317,10 @@ void prepare_shader_catalog() {
     VkPhysicalDeviceProperties props{};
     p_vkGetPhysicalDeviceProperties(vk_physical(), &props);
     char marker_name[128];
-    std::snprintf(marker_name, sizeof marker_name, "/shader_prepare_%04x_%04x_%08x_%016llx.done",
+    // With GPL (nvn_pipeline.cpp) the preparation makes each program's shader libraries instead of a whole pipeline:
+    // its own marker, so switching modes prepares again.
+    const bool gpl = vk_gpl() && !render_pass_objects();  // as gpl_program_job decides
+    std::snprintf(marker_name, sizeof marker_name, "/shader_prepare_%s%04x_%04x_%08x_%016llx.done", gpl ? "gpl_" : "",
                   props.vendorID, props.deviceID, props.driverVersion, (unsigned long long)fingerprint);
     const std::string marker = plat::data_root() + marker_name;
     if (marker_exists(marker)) return;
@@ -403,6 +406,14 @@ void prepare_shader_catalog() {
                 if (stages[i].stage == ShaderStage::Vertex) vi = i;
                 if (stages[i].stage == ShaderStage::Fragment) fi = i;
             }
+            if (gpl) {  // the stages' libraries: every pipeline of the program in play is then a fast link
+                if (auto job = gpl_program_job(vs, fs, *layout))
+                    batch.push_back([job = std::move(job), &compiled] { job(), compiled++; });
+                else
+                    failed++;
+                if (batch.size() >= 64) flush();
+                continue;
+            }
             const uint32_t unwritten = unwritten_inputs(vs, fs);
             const VkShaderModule vm = get_module(vi, 0), fm = fs ? get_module(fi, unwritten) : VK_NULL_HANDLE;
             batch.push_back([vs, fs, layout, vm, fm, &compiled, &failed] {
@@ -416,6 +427,12 @@ void prepare_shader_catalog() {
     if (!batch.empty()) flush();
     for (auto& [stage, module] : modules)
         if (module) p_vkDestroyShaderModule(vk_device(), module, nullptr);
+    if (gpl) {  // gpl_program_job made them through module_of: ~0.6 GB kept for the process's life otherwise
+        std::set<const ShaderInfo*> catalog;
+        for (auto& info : infos)
+            if (info) catalog.insert(info.get());
+        release_modules(catalog);
+    }
     pipeline_cache_save();
     write_marker(marker, fingerprint, attempted, compiled.load());
     plat::shader_compile_progress(compiled.load(), total, false);
