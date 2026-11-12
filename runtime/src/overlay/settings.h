@@ -40,6 +40,7 @@ struct Settings {
     int fsr_sharpness = 25;    // RCAS sharpness in hundredths of a stop: 0 the sharpest, 200 the softest
     int antialiasing = 0;      // 0 off, 1 FXAA (on the presented image)
     int anisotropy = 0;        // 0 the game's own, else 2, 4, 8, 16 (applies after a restart)
+    int rumble = 100;          // controller rumble strength, percent (0: off)
     std::array<int, kControlCount> keyboard_bindings{};
     std::array<int, kControlCount> controller_bindings{};
     uint32_t controller_custom_mask = 0;  // bit per action: controller_bindings[action] instead of the preset

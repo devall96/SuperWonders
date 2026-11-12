@@ -97,6 +97,7 @@ constexpr const char* mute = "Silence the game without changing its volume.";
 constexpr const char* game_language = "The language of the game's text. Applies after restarting the game.";
 constexpr const char* preset = "Which controller button is A. Xbox / DualSense: A at the bottom. Nintendo: A on the "
                                "right, as on a Switch controller.";
+constexpr const char* rumble = "How strongly the controller vibrates when the game asks for it. 0% turns it off.";
 constexpr const char* key = "Select, then press the key for this action. Esc cancels.";
 constexpr const char* pad = "The controller button for this action. Choosing the layout's default clears the change.";
 constexpr const char* metrics = "A performance panel in a corner of the screen.";
@@ -199,6 +200,9 @@ void controls(MenuContext& c, const Labels& l) {
     const char* presets[] = {"Xbox / DualSense", "Nintendo"};
     if (combo(l.control_preset, s.controller_preset, presets, 2)) settings_changed(true);
     describe(desc::preset);
+    if (ImGui::SliderInt("Rumble", &s.rumble, 0, 100, "%d%%")) settings_changed(false);
+    if (ImGui::IsItemDeactivatedAfterEdit()) settings_changed(true);
+    describe(desc::rumble);
     note(s.controller_preset == 1 ? l.nintendo_desc : l.standard_desc);
     ImGuiTableFlags tf = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp;
     if (!ImGui::BeginTable("bindings", 3, tf)) return;
