@@ -185,6 +185,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/nvn/nvn_copy.cpp
     runtime/src/nvn/nvn_pipeline.cpp
     runtime/src/nvn/nvn_dummy.cpp
+    runtime/src/nvn/nvn_fsr.cpp
     runtime/src/nvn/nvn_compare_twin.cpp
     runtime/src/nvn/nvn_pipeline_cache.cpp
     runtime/src/nvn/nvn_upload.cpp
@@ -221,6 +222,9 @@ set(NX_RUNTIME_SOURCES
 # loader (ImGui_ImplVulkan_LoadFunctions), like the rest of the runtime.
 set_source_files_properties(third_party/imgui/backends/imgui_impl_vulkan.cpp PROPERTIES
     COMPILE_DEFINITIONS "VK_NO_PROTOTYPES;IMGUI_IMPL_VULKAN_NO_PROTOTYPES")
+# AMD FidelityFX FSR 1 (third_party/fsr1, MIT): its CPU-side constant setup (FsrEasuCon, FsrRcasCon).
+set_source_files_properties(runtime/src/nvn/nvn_fsr.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/third_party/fsr1")
 set_source_files_properties(runtime/src/overlay/overlay_vk.cpp PROPERTIES
     COMPILE_DEFINITIONS "IMGUI_IMPL_VULKAN_NO_PROTOTYPES")
 file(GLOB NX_GAME_SOURCES CONFIGURE_DEPENDS "${NX_GAME_DIR}/*.cpp")

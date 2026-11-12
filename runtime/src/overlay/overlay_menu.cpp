@@ -107,6 +107,10 @@ constexpr const char* graph = "The time of each of the last 300 frames, 0 to 50 
 constexpr const char* position = "The corner the panel sits in.";
 constexpr const char* memory = "The game closes itself if its memory use passes this, so a leak can never freeze the "
                                "computer.";
+constexpr const char* upscaler = "How the game's image is enlarged when it is smaller than the window (a lower internal "
+                                 "resolution, or fullscreen above 1080p). FSR 1 (AMD FidelityFX Super Resolution) keeps "
+                                 "edges sharp; Bilinear is a plain stretch.";
+constexpr const char* sharpness = "FSR 1's sharpening: higher is sharper (more contrast on edges), lower is softer.";
 constexpr const char* low_vram = "For graphics cards with little video memory: decoded textures are kept compressed "
                                  "(BC3), at a small cost in quality. Applies after restarting the game.";
 }  // namespace desc
@@ -152,6 +156,15 @@ void video(MenuContext& c, const Labels& l) {
     if (ImGui::Checkbox(l.topmost, &s.always_on_top)) settings_changed(true);
     ImGui::EndDisabled();
     describe(desc::topmost);
+    const char* upscalers[] = {"Bilinear", "FSR 1"};
+    if (combo("Upscaling", s.upscaler, upscalers, 2)) settings_changed(true);
+    describe(desc::upscaler);
+    ImGui::BeginDisabled(s.upscaler != 1);
+    int sharp = 200 - s.fsr_sharpness;  // shown as sharpness: 0 soft .. 200 sharp
+    if (ImGui::SliderInt("FSR sharpness", &sharp, 0, 200, "%d%%")) s.fsr_sharpness = 200 - sharp, settings_changed(false);
+    if (ImGui::IsItemDeactivatedAfterEdit()) settings_changed(true);
+    ImGui::EndDisabled();
+    describe(desc::sharpness);
 }
 
 void audio(MenuContext& c, const Labels& l) {
