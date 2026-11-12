@@ -430,6 +430,7 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
             ok ? " read (0, 0, 0, 1)" : ", left as they are");
     }
     if (clamp_uniform_indices(code, next, nullptr)) code.swap(next);
+    if (zero_function_locals(code, next)) code.swap(next);
     return code;
 }
 
