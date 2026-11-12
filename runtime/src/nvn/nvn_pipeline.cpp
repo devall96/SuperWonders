@@ -265,6 +265,27 @@ bool identity(const VkComponentMapping& m) {
 // view of a 3D image is for rendering a slice), 1D of 1D (only with NX_1D_IMAGES: NVN 1D textures are 2D images of
 // height 1, since the translator samples them as 2D, G8). A shader declaring another shape than the texture it gets
 // (a samplerCube given a 2D texture) reads the dummy instead: Metal aborts on the view.
+// A view in another format than its image inherits all the image's usage, storage included, which an sRGB (or other
+// non-storage) view format cannot have (VUID-VkImageViewCreateInfo-usage-02275). Such views get only the usage they
+// are used for. NX_VIEW_FULL_USAGE=1: inherit as before.
+bool format_storage(VkFormat f) {
+    static std::map<VkFormat, bool> known;
+    auto it = known.find(f);
+    if (it != known.end()) return it->second;
+    VkFormatProperties fp{};
+    p_vkGetPhysicalDeviceFormatProperties(vk_physical(), f, &fp);
+    return known[f] = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
+}
+bool narrow_view_usage(const GpuImage& img, VkFormat format, VkImageUsageFlags usage, VkImageViewCreateInfo& ci,
+                       VkImageViewUsageCreateInfo& u) {
+    static const bool off = std::getenv("NX_VIEW_FULL_USAGE") != nullptr;
+    if (off || format == img.format || !img.storage || format_storage(format)) return false;
+    u = {VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
+    u.usage = usage;
+    ci.pNext = &u;
+    return true;
+}
+
 bool view_compatible(const GpuImage& img, VkImageViewType type, uint32_t layers) {
     bool cube_img = img.view_type == VK_IMAGE_VIEW_TYPE_CUBE || img.view_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
     bool img3d = img.view_type == VK_IMAGE_VIEW_TYPE_3D;
@@ -319,6 +340,8 @@ VkImageView view_of(GpuImage& img, VkImageViewType type, const ViewInfo& view) {
                                    ? VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT)
                                    : img.aspect,
                                base, levels, min_layer, layers};
+        VkImageViewUsageCreateInfo usage{};
+        narrow_view_usage(img, format, VK_IMAGE_USAGE_SAMPLED_BIT, ci, usage);
         if (p_vkCreateImageView(vk_device(), &ci, nullptr, &v) != VK_SUCCESS) v = img.view;
     }
     if (v) hit = {key, v};  // never a null one: those are tried again
@@ -786,6 +809,10 @@ VkImageView attachment_view(GpuImage& img, uint32_t level, uint32_t layer, VkFor
         ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
         ci.format = format;
         ci.subresourceRange = {img.aspect, level, 1, layer, 1};
+        VkImageViewUsageCreateInfo usage{};
+        narrow_view_usage(img, format, img.aspect == VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                                                                              : VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                          ci, usage);
         if (p_vkCreateImageView(vk_device(), &ci, nullptr, &v) != VK_SUCCESS) v = img.view;
     }
     return v;
