@@ -632,7 +632,10 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         prepare_recorded_pipelines();
     }
     if (!async_gpu() || pipelined()) free_retired_images(async_gpu() ? frame_completed() : UINT64_MAX);
-    if (plat::headless()) return present_headless(texture);
+    // NX_HEADLESS_PRESENT=1 (Windows test runs): the hidden window still gets a swapchain and the full present path
+    // (FXAA, FSR 1, the overlay), so it can be tested without a window on screen. Linux: SDL's offscreen driver.
+    static const bool headless_present = std::getenv("NX_HEADLESS_PRESENT") != nullptr;
+    if (plat::headless() && !headless_present) return present_headless(texture);
     if (plat::window_minimized()) return;
     if (plat::window_generation() != g_window_gen) {  // Android: a new window after home or the lock screen
         if (async_gpu()) frame_wait_all();
