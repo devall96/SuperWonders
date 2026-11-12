@@ -74,6 +74,9 @@ struct PadState {
 };
 void read_pad(PadState& p);  // player 1
 bool fast_forward();  // held: the game runs unpaced (Tab on PC; false where there is no key for it)
+// Player 1's controller rumble: low (heavy) and high (light) motor, 0..1, scaled by the player's strength setting.
+// Called on every vibration value the game sends; the platform keeps it running until the next.
+void rumble(float low, float high);
 // Touch controls to draw over the picture (touch_layout.cpp, platform_android_input.cpp): circles at x, y (0..1
 // across the landscape screen), radius r (a fraction of its height), opacity alpha. 0 where nothing is drawn.
 struct OverlayShape {

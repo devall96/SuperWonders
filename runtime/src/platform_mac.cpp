@@ -341,6 +341,8 @@ static void sample_input() {
     g_pad = p;
 }
 
+void rumble(float, float) {}  // not yet on this platform
+
 void read_pad(PadState& p) {
     std::lock_guard lk(g_pad_lock);
     p.buttons |= g_pad.buttons;
