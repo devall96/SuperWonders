@@ -236,6 +236,7 @@ static overlay::Settings to_overlay(const PcMenuState& s) {
     o.metric_fps = s.metric_fps, o.metric_one_percent_low = s.metric_one_percent_low;
     o.metric_game_speed = s.metric_game_speed, o.metric_frametime_graph = s.metric_frametime_graph;
     o.overlay_position = s.overlay_position, o.controller_custom_mask = s.controller_custom_mask;
+    o.upscaler = s.upscaler, o.fsr_sharpness = s.fsr_sharpness;
     for (size_t i = 0; i < kPcControlCount; ++i)
         o.keyboard_bindings[i] = s.keyboard_bindings[i], o.controller_bindings[i] = s.controller_bindings[i];
     return o;
@@ -250,6 +251,7 @@ static PcMenuState from_overlay(const overlay::Settings& o) {
     s.metric_fps = o.metric_fps, s.metric_one_percent_low = o.metric_one_percent_low;
     s.metric_game_speed = o.metric_game_speed, s.metric_frametime_graph = o.metric_frametime_graph;
     s.overlay_position = o.overlay_position, s.controller_custom_mask = o.controller_custom_mask;
+    s.upscaler = o.upscaler, s.fsr_sharpness = o.fsr_sharpness;
     for (size_t i = 0; i < kPcControlCount; ++i)
         s.keyboard_bindings[i] = o.keyboard_bindings[i], s.controller_bindings[i] = o.controller_bindings[i];
     return s;
@@ -344,7 +346,8 @@ static void save_pc_settings() {
          << "\nmetric_game_speed=" << g_pc_settings.metric_game_speed
          << "\nmetric_frametime_graph=" << g_pc_settings.metric_frametime_graph
          << "\noverlay_position=" << g_pc_settings.overlay_position
-         << "\ncontroller_custom_mask=" << g_pc_settings.controller_custom_mask << '\n';
+         << "\ncontroller_custom_mask=" << g_pc_settings.controller_custom_mask
+         << "\nupscaler=" << g_pc_settings.upscaler << "\nfsr_sharpness=" << g_pc_settings.fsr_sharpness << '\n';
     for (size_t i = 0; i < kPcControlCount; ++i)
         file << "keyboard_" << i << '=' << g_pc_settings.keyboard_bindings[i] << '\n'
              << "controller_" << i << '=' << g_pc_settings.controller_bindings[i] << '\n';
@@ -379,6 +382,9 @@ static void load_pc_settings() {
         else if (std::sscanf(line.c_str(), "overlay_position=%d", &value) == 1)
             g_pc_settings.overlay_position = std::clamp(value, 0, 3);
         else if (std::sscanf(line.c_str(), "controller_custom_mask=%u", &g_pc_settings.controller_custom_mask) == 1) {}
+        else if (std::sscanf(line.c_str(), "upscaler=%d", &value) == 1) g_pc_settings.upscaler = std::clamp(value, 0, 1);
+        else if (std::sscanf(line.c_str(), "fsr_sharpness=%d", &value) == 1)
+            g_pc_settings.fsr_sharpness = std::clamp(value, 0, 200);
         else {
             int index = -1, binding = -1;
             if (std::sscanf(line.c_str(), "keyboard_%d=%d", &index, &binding) == 2 &&
@@ -394,6 +400,7 @@ static void load_pc_settings() {
     apply_input_bindings(g_pc_settings);
     set_memory_limit_gb(g_pc_settings.memory_limit_gb);
     _putenv_s("NX_LOW_VRAM_PROFILE", g_pc_settings.low_vram_profile ? "1" : "0");
+    nx::nvn::set_fsr(g_pc_settings.upscaler == 1, float(g_pc_settings.fsr_sharpness) / 100.0f);
 }
 
 static void set_game_volume() {
@@ -610,6 +617,7 @@ static void apply_pc_menu(const PcMenuState& state, bool persist) {
     apply_metrics_settings(g_pc_settings);
     set_memory_limit_gb(g_pc_settings.memory_limit_gb);
     _putenv_s("NX_LOW_VRAM_PROFILE", g_pc_settings.low_vram_profile ? "1" : "0");
+    nx::nvn::set_fsr(g_pc_settings.upscaler == 1, float(g_pc_settings.fsr_sharpness) / 100.0f);
     if (g_fullscreen != g_pc_settings.fullscreen) toggle_fullscreen(g_window);
     else if (size_changed && !g_fullscreen) resize_window_client(g_window, g_pc_settings.width, g_pc_settings.height);
     if (topmost_changed && g_window)
