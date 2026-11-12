@@ -31,7 +31,7 @@ struct Settings {
     int language = 0;       // menu language: English, Italian, German, French
     int game_language = 0;  // language reported to the game at startup
     int memory_limit_gb = 8;
-    int controller_preset = 0;  // 0 Xbox / DualSense positions, 1 Nintendo positions
+    int controller_preset = 1;  // 1 Nintendo positions (the default, as on the Switch: A on the right), 0 Xbox / DualSense
     bool muted = false, fullscreen = false, always_on_top = false;
     bool metrics_enabled = false, low_vram_profile = false;
     bool metric_fps = true, metric_one_percent_low = true, metric_game_speed = true, metric_frametime_graph = true;
