@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "nvn_vk.h"
+#include "overlay/overlay.h"
 #include "nvn_pipeline.h"
 #include "nvn_shader_prepare.h"
 #include "platform.h"
@@ -305,6 +306,7 @@ bool make_swapchain() {
         if (async_gpu()) frame_wait_all();
         p_vkDeviceWaitIdle(g_device);
         present_pass_release();
+        overlay::release();
         p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
         g_swapchain = VK_NULL_HANDLE;
     }
@@ -401,6 +403,8 @@ void flush_pipeline_cache() {
 
 std::recursive_mutex& gpu_lock() { return g_gpu; }
 VkDevice vk_device() { return g_device; }
+VkInstance vk_instance() { return g_instance; }
+void* vk_gipa() { return g_gipa; }
 VkPhysicalDevice vk_physical() { return g_physical; }
 VkQueue vk_queue() { return g_queue; }
 uint32_t vk_queue_family() { return g_family; }
@@ -651,6 +655,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         if (async_gpu()) frame_wait_all();
         p_vkDeviceWaitIdle(g_device);
         present_pass_release();
+        overlay::release();
         if (g_swapchain) p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
         g_swapchain = VK_NULL_HANDLE;
         log("nvn/vk: new window: surface and swapchain re-made");
@@ -703,6 +708,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
     }
     if (!drawn) transition(g_cb, dst, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    overlay::record(g_cb, index, g_sc_images, g_sc_format, g_sc_extent);  // the F1 menu and metrics (overlay/)
     static uint64_t presents = 0;
     presents++;
     if (presents % (presents < 300 ? 60 : 300) == 0) draw_log_stats();
