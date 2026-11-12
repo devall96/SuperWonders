@@ -8,6 +8,7 @@
 #include <atomic>
 #include <vector>
 
+#include "nvn_pipeline_async.h"
 #include "nvn_vk.h"
 #include "platform.h"
 
@@ -90,11 +91,12 @@ void note_astc_decoded(uint64_t ns) { g_astc++, g_astc_ns += ns; }
 
 // One line per timing window (nvn_vk.cpp log_timing): what the replay created, and the time it took.
 void creation_log(uint64_t frames) {
-    if (g_pipelines || g_astc)
-        log("nvn/vk: created over %llu frames: %llu pipelines (%.1f ms), %llu ASTC textures decoded (%.1f ms)",
+    if (g_pipelines || g_astc || g_pipelines_skipped)
+        log("nvn/vk: created over %llu frames: %llu pipelines (%.1f ms), %llu ASTC textures decoded (%.1f ms), "
+            "%llu draws skipped while compiling",
             (unsigned long long)frames, (unsigned long long)g_pipelines, double(g_pipeline_ns) / 1e6,
-            (unsigned long long)g_astc, double(g_astc_ns) / 1e6);
-    g_pipelines = g_pipeline_ns = g_astc = g_astc_ns = 0;
+            (unsigned long long)g_astc, double(g_astc_ns) / 1e6, (unsigned long long)g_pipelines_skipped);
+    g_pipelines = g_pipeline_ns = g_astc = g_astc_ns = g_pipelines_skipped = 0;
     static uint64_t windows = 0;
     if (++windows % 10 == 0) pipeline_cache_save(), save_pipeline_keys();
 }
