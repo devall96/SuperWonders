@@ -32,6 +32,10 @@ if(MSVC)
     add_compile_options(/arch:AVX2)
 elseif(MINGW)
     add_compile_options(-mavx2)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    # x86-64-v3 (Haswell and later): AVX2, as on Windows, and CMPXCHG16B, without which the recompiled code's
+    # 128-bit __atomic_compare_exchange_n becomes a libatomic call (__atomic_compare_exchange_16, unresolved).
+    add_compile_options(-march=x86-64-v3)
 endif()
 if(WIN32)
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -110,7 +114,7 @@ foreach(mod main sdk)
         # armv8.2-a+crypto: cpu.h's AES/SHA paths need __ARM_FEATURE_AES/SHA2 (the NDK default armv8-a has neither).
         target_compile_options(game_${mod} PRIVATE -O2 -fPIC -fvisibility=hidden -fno-semantic-interposition
                                -march=armv8.2-a+crypto)
-    elseif(APPLE)
+    elseif(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_compile_options(game_${mod} PRIVATE -O2 -fvisibility=hidden)
     endif()
 endforeach()
@@ -223,6 +227,33 @@ elseif(APPLE)
     target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden)
     # The executable loads near 0x1_0000_0000, below the guest ranges (0x40_0000_0000 and up). The game runs on its
     # own thread with a 64 MiB stack (platform_mac.cpp), so the main thread's stack size does not matter.
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Linux: SDL3 (window, input, audio, the Vulkan surface) and the Vulkan headers from the distribution
+    # (Ubuntu/Debian: apt install libsdl3-dev libvulkan-dev). The loader comes with the GPU driver (libvulkan1).
+    # The F1 settings menu (pc_menu_win.cpp) is Win32 drawing code and is not built here.
+    find_package(Threads REQUIRED)
+    find_package(SDL3 REQUIRED CONFIG)
+    # vk_gen.{h,cpp} need the registry version tools/gen_vk.py generated from (1.4.357); distributions ship older
+    # headers (Ubuntu 26.04: 1.4.341). Use the LunarG SDK when VULKAN_SDK is set, else Khronos' headers at that tag.
+    if(DEFINED ENV{VULKAN_SDK})
+        set(NX_VULKAN_INCLUDE "$ENV{VULKAN_SDK}/include")
+    else()
+        include(FetchContent)
+        FetchContent_Declare(VulkanHeaders
+            GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
+            GIT_TAG v1.4.357
+            GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(VulkanHeaders)
+        set(NX_VULKAN_INCLUDE "${vulkanheaders_SOURCE_DIR}/include")
+    endif()
+    add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_linux.cpp runtime/src/memguard_linux.cpp)
+    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
+    target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk SDL3::SDL3 Threads::Threads ${CMAKE_DL_LIBS})
+    target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden)
+    # The executable is position dependent and loads at 0x40_0000, far below the guest ranges (0x40_0000_0000 and
+    # up); shared libraries and the host heap are mapped top-down from near 0x7fff_ffff_ffff. The game runs on its
+    # own thread with a 64 MiB stack (platform_linux.cpp).
+    target_link_options(${NX_GAME} PRIVATE -no-pie)
 else()
     if(WIN32)
         # SDL's HIDAPI gamepad backend provides native DualSense support without a driver wrapper.

@@ -60,6 +60,11 @@ const Font& font(uint32_t type) {
     // Arial Unicode (Office installs it) covers the most; else Arial, as on the Mac.
     candidates.push_back("C:/Windows/Fonts/arialuni.ttf");
     candidates.push_back("C:/Windows/Fonts/arial.ttf");
+#elif defined(__linux__)
+    // Common distribution fonts with wide coverage (Noto, Liberation: Arial's metrics, DejaVu).
+    candidates.push_back("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf");
+    candidates.push_back("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf");
+    candidates.push_back("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
 #endif
     std::vector<uint8_t> ttf;
     for (const auto& path : candidates) {
