@@ -487,6 +487,7 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
     bool is_int = kinds && patch_int_inputs(code, kinds, next);
     if (is_int) code.swap(next);
     if (int_inputs) *int_inputs = is_int;
+    if (auto tk = int_texture_kinds(s); !tk.empty() && patch_int_textures(code, tk, next)) code.swap(next);
     if (s->stage == ShaderStage::Compute && s->control.shared_size &&
         resize_shared_memory(code, s->control.shared_size, next)) {
         code.swap(next);
