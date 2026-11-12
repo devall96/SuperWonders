@@ -5,7 +5,9 @@
 
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -81,6 +83,25 @@ struct PipelineKey {
 // `may_skip`: the caller can draw this in the next frame instead (nvn_pipeline_async.h). A pipeline not compiled yet
 // is then compiled on a worker and VK_NULL_HANDLE returned meanwhile; otherwise it is compiled here, as before.
 VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout, bool may_skip = false);
+// VK_EXT_graphics_pipeline_library (nvn_pipeline.cpp, on with vk_gpl()). In its dynamic mode (NX_GPL_DYNAMIC, on by
+// default) the rasterizer and depth/stencil state below is dynamic in every pipeline graphics_pipeline() returns, so
+// the draw sets it (set_raster_depth_state) and pipelines are shared by draws that differ only in it.
+bool gpl_dynamic_state();
+struct RasterDepthState {
+    VkCullModeFlags cull;
+    VkFrontFace front;
+    VkBool32 bias, depth_test, depth_write, stencil_test;
+    VkCompareOp depth_compare;
+    VkStencilOpState faces[2];  // front, back (their masks and reference are dynamic anyway)
+};
+RasterDepthState raster_depth_state(const PipelineKey& key);  // zero-filled first: compare it byte for byte
+void set_raster_depth_state(VkCommandBuffer cb, const RasterDepthState& s);
+// Startup preparation: makes the module of the program's stages on the caller, and returns the job (for a worker)
+// that creates its pre-rasterization and fragment shader libraries; empty without GPL.
+std::function<void()> gpl_program_job(const ShaderInfo* vs, const ShaderInfo* fs, const ProgramLayout& layout);
+void gpl_log();
+// Destroys the modules module_of made for these shaders (the startup catalog's, once its jobs are done).
+void release_modules(const std::set<const ShaderInfo*>& shaders);  // one line per timing window (nvn_pipeline_cache.cpp creation_log)
 void record_pipeline_key(const PipelineKey& key);
 void prepare_recorded_pipelines();
 bool depth_remap();  // NX_CLIP_Z_PATCH: clip z -w..w mapped in the vertex shaders, not by VK_EXT_depth_clip_control
