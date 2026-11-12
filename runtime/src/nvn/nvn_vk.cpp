@@ -307,6 +307,7 @@ bool make_swapchain() {
         p_vkDeviceWaitIdle(g_device);
         present_pass_release();
         overlay::release();
+        fsr_release();
         p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
         g_swapchain = VK_NULL_HANDLE;
     }
@@ -656,6 +657,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         p_vkDeviceWaitIdle(g_device);
         present_pass_release();
         overlay::release();
+        fsr_release();
         if (g_swapchain) p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
         g_swapchain = VK_NULL_HANDLE;
         log("nvn/vk: new window: surface and swapchain re-made");
@@ -683,9 +685,11 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         }
     }
     bool drawn = src && present_pass_record(g_cb, *src, crop, index);  // nvn_present.cpp: leaves dst PRESENT_SRC
-    if (src && !drawn) transition(g_cb, *src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    // FSR 1 when the image is smaller than the window (nvn_fsr.cpp): leaves dst TRANSFER_DST, as the blit does.
+    const bool upscaled = src && !drawn && fsr_record(g_cb, *src, dst, g_sc_extent, crop);
+    if (src && !drawn && !upscaled) transition(g_cb, *src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     if (!drawn) transition(g_cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    if (src && !drawn) {
+    if (src && !drawn && !upscaled) {
         VkImageBlit blit{};
         blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         blit.srcOffsets[1] = {int32_t(src->width), int32_t(src->height), 1};
@@ -716,9 +720,10 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
     if (presents % 300 == 0) zero_draws_log();
     frame_sig_flush(presents);
     const bool due = frame_dump_due(presents);
-    bool dump = src && due;
-    if (dump) transition(g_cb, *src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);  // the present pass left it sampled
-    dump = dump && frame_dump_record(g_cb, *src);
+    GpuImage* shown = upscaled && fsr_output() ? fsr_output() : src;  // NX_DUMP_FSR: the upscaled image
+    bool dump = shown && due;
+    if (dump) transition(g_cb, *shown, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);  // the present pass left it sampled
+    dump = dump && frame_dump_record(g_cb, *shown);
     // One per swapchain image on both paths: a single semaphore could be signaled again while an earlier present
     // still waited on it (VUID-vkQueueSubmit-pSignalSemaphores-00067). NX_SHARED_PRESENT_SEMAPHORE=1: as before.
     static const bool shared_sem = std::getenv("NX_SHARED_PRESENT_SEMAPHORE") != nullptr;
@@ -727,7 +732,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         frame_submit(acquired, rendered, {}, dump);
     else
         end_and_wait(acquired, rendered);
-    if (dump) frame_dump_write(*src, presents);
+    if (dump) frame_dump_write(*shown, presents);
     if (due) debug_dump_textures(presents);
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1;
