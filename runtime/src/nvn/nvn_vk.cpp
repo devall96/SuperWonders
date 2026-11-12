@@ -700,7 +700,10 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
     bool dump = src && due;
     if (dump) transition(g_cb, *src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);  // the present pass left it sampled
     dump = dump && frame_dump_record(g_cb, *src);
-    VkSemaphore rendered = async_gpu() ? frame_rendered_semaphore(index) : g_rendered;
+    // One per swapchain image on both paths: a single semaphore could be signaled again while an earlier present
+    // still waited on it (VUID-vkQueueSubmit-pSignalSemaphores-00067). NX_SHARED_PRESENT_SEMAPHORE=1: as before.
+    static const bool shared_sem = std::getenv("NX_SHARED_PRESENT_SEMAPHORE") != nullptr;
+    VkSemaphore rendered = async_gpu() || !shared_sem ? frame_rendered_semaphore(index) : g_rendered;
     if (async_gpu())  // the blit's fence is not waited for (vkQueuePresentKHR waits on `rendered`); a dumped frame is
         frame_submit(acquired, rendered, {}, dump);
     else
