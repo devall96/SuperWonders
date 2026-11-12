@@ -78,7 +78,9 @@ struct PipelineKey {
     uint32_t ufloat_colors = 0;  // bit k: colour target k is R11G11B10F (no alpha: destination alpha reads 1)
     uint32_t alpha_to_coverage = 0;  // BindMultisampleState (G7)
 };
-VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout);
+// `may_skip`: the caller can draw this in the next frame instead (nvn_pipeline_async.h). A pipeline not compiled yet
+// is then compiled on a worker and VK_NULL_HANDLE returned meanwhile; otherwise it is compiled here, as before.
+VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout, bool may_skip = false);
 void record_pipeline_key(const PipelineKey& key);
 void prepare_recorded_pipelines();
 bool depth_remap();  // NX_CLIP_Z_PATCH: clip z -w..w mapped in the vertex shaders, not by VK_EXT_depth_clip_control
