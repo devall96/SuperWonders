@@ -54,6 +54,14 @@ VkInstance vk_instance();     // for the overlay (overlay/overlay_vk.cpp)
 uint32_t vk_queue_family();
 void* vk_gipa();              // the loader's vkGetInstanceProcAddr
 VkQueue vk_queue();
+// nvn_fsr.cpp: FSR 1 upscaling of the presented image (NX_FSR, the overlay menu's Upscaling setting).
+void set_fsr(bool on, float sharpness_stops);
+bool fsr_active();
+// Upscales `src` into swapchain image `dst` (left in TRANSFER_DST_OPTIMAL) when FSR is on and `src` is smaller than
+// `extent`; false otherwise (the caller blits).
+bool fsr_record(VkCommandBuffer cb, GpuImage& src, GpuImage& dst, VkExtent2D extent, const int32_t* crop);
+GpuImage* fsr_output();  // the last upscaled image, for frame dumps with NX_DUMP_FSR=1 (else null)
+void fsr_release();      // the swapchain goes away
 bool vk_depth_clip_control();
 // The core features the device was created with (all the GPU has): depthClamp, depthBiasClamp, depthBounds, ...
 const VkPhysicalDeviceFeatures& vk_features();
