@@ -46,11 +46,11 @@ constexpr Labels kLabels[] = {
      "Profil VRAM réduit", "Redémarrez pour appliquer le profil de textures."},
 };
 constexpr const char* kLanguageNames[] = {"English", "Italiano", "Deutsch", "Français"};
-constexpr const char* kInternal[4][5] = {
-    {"Original / Dynamic", "1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440"},
-    {"Originale / dinamica", "1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440"},
-    {"Original / Dynamisch", "1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440"},
-    {"Originale / dynamique", "1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440"},
+constexpr const char* kInternal[4][7] = {
+    {"Original / Dynamic", "1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440", "3840 x 2160", "Native (screen)"},
+    {"Originale / dinamica", "1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440", "3840 x 2160", "Nativa (schermo)"},
+    {"Original / Dynamisch", "1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440", "3840 x 2160", "Nativ (Bildschirm)"},
+    {"Originale / dynamique", "1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440", "3840 x 2160", "Native (écran)"},
 };
 constexpr int kSizes[][2] = {{1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}};
 constexpr const char* kOverlayLabels[4][6] = {
@@ -89,7 +89,13 @@ namespace desc {
 constexpr const char* language = "Language of this menu.";
 constexpr const char* window_size = "Size of the game window in pixels. Not available in fullscreen.";
 constexpr const char* internal = "The resolution the game renders at. Original lets the game choose (it lowers it under "
-                                 "load); higher is sharper and costs more GPU time. Applies after restarting the game.";
+                                 "load); higher is sharper and costs more GPU time. Native renders at the size the "
+                                 "image is shown, so nothing is stretched. Applies after restarting the game.";
+constexpr const char* vsync = "How frames reach the screen. On: waits for the display (no tearing; smooth with "
+                              "FreeSync/G-Sync). Fast: the newest frame at each refresh (the default). Adaptive: "
+                              "waits unless a frame is late. Off: at once (can tear).";
+constexpr const char* frame_cap = "The highest frame rate. The game always runs at full speed; 30 halves the GPU "
+                                  "work for weak or hot machines.";
 constexpr const char* fullscreen = "Fill the whole screen. F11 also switches it.";
 constexpr const char* topmost = "Keep the game window above other windows. Not available on Wayland.";
 constexpr const char* volume = "The game's volume.";
@@ -152,7 +158,7 @@ void video(MenuContext& c, const Labels& l) {
     if (combo(l.window_size, size, sizes, 4)) s.width = kSizes[size][0], s.height = kSizes[size][1], settings_changed(true);
     ImGui::EndDisabled();
     describe(desc::window_size);
-    if (combo(l.internal_resolution, s.internal_resolution, kInternal[lang], 5)) settings_changed(true);
+    if (combo(l.internal_resolution, s.internal_resolution, kInternal[lang], 7)) settings_changed(true);
     describe(desc::internal);
     note(l.restart_note);
     if (ImGui::Checkbox(l.fullscreen, &s.fullscreen)) settings_changed(true);
@@ -180,6 +186,13 @@ void video(MenuContext& c, const Labels& l) {
         if (af_levels[i] == s.anisotropy) af = i;
     if (combo("Anisotropic filtering", af, af_names, 5)) s.anisotropy = af_levels[af], settings_changed(true);
     describe(desc::anisotropy);
+    const char* vsync_names[] = {"On", "Fast", "Adaptive", "Off"};
+    if (combo("VSync", s.vsync, vsync_names, 4)) settings_changed(true);
+    describe(desc::vsync);
+    const char* caps[] = {"60 fps", "30 fps"};
+    int cap = s.frame_cap == 30 ? 1 : 0;
+    if (combo("Frame rate cap", cap, caps, 2)) s.frame_cap = cap ? 30 : 60, settings_changed(true);
+    describe(desc::frame_cap);
 }
 
 void audio(MenuContext& c, const Labels& l) {

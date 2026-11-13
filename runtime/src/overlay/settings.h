@@ -26,7 +26,7 @@ enum Physical : int {
 
 struct Settings {
     int width = 1280, height = 720;
-    int internal_resolution = 0;  // svc_am.cpp presets: 0 original/dynamic, then 720p, 900p, 1080p, 1440p
+    int internal_resolution = 0;  // svc_am.cpp presets: 0 original/dynamic, 720p, 900p, 1080p, 1440p, 2160p, 6 native
     int volume = 100;
     int language = 0;       // menu language: English, Italian, German, French
     int game_language = 0;  // language reported to the game at startup
@@ -41,6 +41,8 @@ struct Settings {
     int antialiasing = 0;      // 0 off, 1 FXAA (on the presented image)
     int anisotropy = 0;        // 0 the game's own, else 2, 4, 8, 16 (applies after a restart)
     int rumble = 100;          // controller rumble strength, percent (0: off)
+    int vsync = 1;             // 0 On (FIFO), 1 Fast (MAILBOX, else IMMEDIATE: the default), 2 Adaptive (FIFO_RELAXED), 3 Off
+    int frame_cap = 60;        // 60, or 30 (the game's logic runs at 60 steps a second either way)
     std::array<int, kControlCount> keyboard_bindings{};
     std::array<int, kControlCount> controller_bindings{};
     uint32_t controller_custom_mask = 0;  // bit per action: controller_bindings[action] instead of the preset
