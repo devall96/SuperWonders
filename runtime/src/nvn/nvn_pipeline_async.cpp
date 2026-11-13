@@ -2,6 +2,7 @@
 #include "nvn_pipeline_async.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <deque>
 #include <thread>
@@ -84,9 +85,12 @@ std::shared_ptr<AsyncPipeline> compile_pipeline_async(std::shared_ptr<PipelineBu
 
 void run_on_pool(std::function<void()> job) { pool().push(std::move(job)); }
 
-void run_parallel(std::vector<std::function<void()>>& jobs) {
+void run_parallel(std::vector<std::function<void()>>& jobs, const std::function<void()>& tick) {
     if (!async_pipelines()) {  // NX_ASYNC_PIPELINES=0: one after another on this thread, as before (bisecting)
-        for (auto& job : jobs) job();
+        for (auto& job : jobs) {
+            job();
+            if (tick) tick();
+        }
         return;
     }
     struct Count {
@@ -102,7 +106,16 @@ void run_parallel(std::vector<std::function<void()>>& jobs) {
             if (--count.left == 0) count.cv.notify_all();
         });
     std::unique_lock l(count.lock);
-    count.cv.wait(l, [&] { return count.left == 0; });
+    if (!tick) {
+        count.cv.wait(l, [&] { return count.left == 0; });
+        return;
+    }
+    // tick (outside the lock) every 16 ms until the jobs are done
+    while (!count.cv.wait_for(l, std::chrono::milliseconds(16), [&] { return count.left == 0; })) {
+        l.unlock();
+        tick();
+        l.lock();
+    }
 }
 
 namespace {

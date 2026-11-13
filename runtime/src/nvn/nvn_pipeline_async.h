@@ -73,7 +73,7 @@ std::shared_ptr<AsyncPipeline> compile_pipeline_async(std::shared_ptr<PipelineBu
 // A job on the same worker pool (the GPL libraries a skipped draw's program needs, nvn_pipeline.cpp).
 void run_on_pool(std::function<void()> job);
 // Runs every job on the worker pool and returns when all have finished.
-void run_parallel(std::vector<std::function<void()>>& jobs);
+void run_parallel(std::vector<std::function<void()>>& jobs, const std::function<void()>& tick = {});
 
 // Disk writes off the replay thread: the periodic saves of the pipeline cache (~240 MB) and the pipeline recipes
 // (~9 MB) took 100-600 ms each, a stall every 10 s. One thread, jobs in order. wait_background_writes() returns once

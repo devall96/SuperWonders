@@ -434,7 +434,7 @@ void prepare_recorded_pipelines() {
     if (!total) return;
     const uint64_t start = plat::monotonic_ns();
     uint64_t ready = 0, skipped = 0;
-    plat::shader_compile_progress(0, total, true);
+    prep_progress(0, total, true, 1);
     log("nvn/vk: prewarming %llu previously seen graphics pipelines", (unsigned long long)total);
     for (uint64_t i = 0; i < total; ++i) {
         const PipelineKeysRecord& rec = g_pipeline_key_records[size_t(i)];
@@ -450,9 +450,9 @@ void prepare_recorded_pipelines() {
             if (fs) stages.push_back(fs);
             if (graphics_pipeline(key, program_layout(stages))) ++ready; else ++skipped;
         }
-        if ((i & 15u) == 15u || i + 1 == total) plat::shader_compile_progress(i + 1, total, true);
+        if ((i & 15u) == 15u || i + 1 == total) prep_progress(i + 1, total, true, 1);
     }
-    plat::shader_compile_progress(total, total, false);
+    prep_progress(total, total, false, 1);
     log("nvn/vk: pipeline prewarm finished: %llu/%llu ready, %llu skipped in %.1f ms",
         (unsigned long long)ready, (unsigned long long)total, (unsigned long long)skipped,
         double(plat::monotonic_ns() - start) / 1e6);

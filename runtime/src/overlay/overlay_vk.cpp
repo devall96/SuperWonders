@@ -1,5 +1,7 @@
 // Draws the overlay into the swapchain image with Dear ImGui's Vulkan backend: one render pass that loads the image
 // as presented (PRESENT_SRC in and out), on the command buffer that already holds the frame's blit or present pass.
+#include <algorithm>
+#include <cstdlib>
 #include <vector>
 
 #include "vk_bridge.h"  // first: the platform's Vulkan defines (Win32 surface types) before vk_gen.h
@@ -138,8 +140,23 @@ bool ensure_framebuffers(const std::vector<VkImage>& images, VkExtent2D extent) 
 
 }  // namespace
 
+// NX_OVERLAY_TIMING=1: the overlay's CPU time per drawn frame (ImGui frame + recording), logged every 300 frames.
+struct Timer {
+    uint64_t t0 = plat::monotonic_ns();
+    ~Timer() {
+        static const bool on = std::getenv("NX_OVERLAY_TIMING") != nullptr;
+        if (!on) return;
+        static uint64_t n = 0, sum = 0, most = 0;
+        const uint64_t d = plat::monotonic_ns() - t0;
+        n++, sum += d, most = std::max(most, d);
+        if (n % 300 == 0) log("overlay: %.3f ms a frame on average, %.3f ms at most (300 frames)", double(sum) / 300e6,
+                              double(most) / 1e6), sum = 0, most = 0;
+    }
+};
+
 bool record(VkCommandBuffer cb, uint32_t index, const std::vector<VkImage>& images, VkFormat format, VkExtent2D extent) {
     if (!enabled() || images.empty() || index >= images.size() || !frame_wanted()) return false;
+    Timer timer;
     ensure_context();
     if (!ensure_backend(format, uint32_t(images.size())) || !ensure_framebuffers(images, extent)) return false;
     ImGui_ImplVulkan_NewFrame();  // uploads the font atlas the first time (before ImGui::NewFrame)

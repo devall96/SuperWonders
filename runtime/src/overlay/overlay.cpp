@@ -15,6 +15,7 @@
 #include <nx/runtime.h>
 
 #include "overlay/overlay_internal.h"
+#include "overlay/overlay_ui.h"
 
 namespace nx::overlay {
 
@@ -38,6 +39,7 @@ Settings g_settings;  // the presenting thread's copy
 std::atomic<bool> g_open{false};
 std::atomic<bool> g_metrics{false};
 std::atomic<int> g_input_frames{0};  // frames to run after input while closed (hover/close animations)
+std::atomic<bool> g_fading{false};   // the menu is still fading out
 
 // The pad as the player holds it (before filter_pad clears it), for navigation.
 std::atomic<uint64_t> g_pad_buttons{0};
@@ -83,43 +85,9 @@ void push(const Event& e) {
     if (g_events.size() < 4096) g_events.push_back(e);
 }
 
-// Fonts with the menu languages' Latin-1 letters; ImGui's built-in font has ASCII only.
-const char* const kFonts[] = {
-#if defined(_WIN32)
-    "C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/arial.ttf",
-#elif defined(__APPLE__)
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-#else
-    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-#endif
-};
-constexpr float kFontBake = 36.0f;  // baked large, drawn at kFontSize * scale through FontGlobalScale
-constexpr float kFontSize = 18.0f;  // at 720p
-
-void style() {
-    ImGui::StyleColorsDark();
-    ImGuiStyle& s = ImGui::GetStyle();
-    s.WindowRounding = 10, s.FrameRounding = 6, s.GrabRounding = 6, s.TabRounding = 6, s.PopupRounding = 6;
-    s.WindowPadding = {16, 14}, s.FramePadding = {10, 6}, s.ItemSpacing = {10, 8};
-    ImVec4* c = s.Colors;
-    c[ImGuiCol_WindowBg] = {0.08f, 0.11f, 0.16f, 0.94f};
-    c[ImGuiCol_PopupBg] = {0.10f, 0.13f, 0.19f, 0.98f};
-    c[ImGuiCol_Border] = {0.33f, 0.44f, 0.59f, 0.6f};
-    c[ImGuiCol_FrameBg] = {0.14f, 0.19f, 0.27f, 1.0f};
-    c[ImGuiCol_FrameBgHovered] = {0.20f, 0.28f, 0.40f, 1.0f};
-    c[ImGuiCol_FrameBgActive] = {0.24f, 0.34f, 0.48f, 1.0f};
-    c[ImGuiCol_Button] = {0.18f, 0.26f, 0.38f, 1.0f};
-    c[ImGuiCol_ButtonHovered] = {0.26f, 0.38f, 0.55f, 1.0f};
-    c[ImGuiCol_ButtonActive] = {0.30f, 0.45f, 0.65f, 1.0f};
-    c[ImGuiCol_Tab] = {0.14f, 0.19f, 0.27f, 1.0f};
-    c[ImGuiCol_TabHovered] = {0.30f, 0.45f, 0.65f, 1.0f};
-    c[ImGuiCol_TabSelected] = {0.24f, 0.38f, 0.58f, 1.0f};
-    c[ImGuiCol_CheckMark] = c[ImGuiCol_SliderGrab] = {0.35f, 0.75f, 1.0f, 1.0f};
-    c[ImGuiCol_NavCursor] = {1.0f, 0.82f, 0.25f, 1.0f};
-}
-
-void draw_metrics(float scale) {
+// The metrics panel: a small card in the chosen corner, in the menu's colours. Savage Wind's performance overlay
+// (menu.mm perf_overlay_draw) is the model: names in colour, values beside them, the frame times as a graph.
+void draw_metrics(float height) {
     std::array<float, kHistory> samples{};
     size_t count = 0;
     {
@@ -141,32 +109,90 @@ void draw_metrics(float scale) {
         for (size_t i = 0; i < n; ++i) s += slow[i];
         if (s > 0) low = double(n) * 1000.0 / s;
     }
-    double speed = fps * double(std::max(1, g_game_interval.load())) / 60.0 * 100.0;
+    const int interval = std::max(1, g_game_interval.load());
+    const double speed = fps * double(interval) / 60.0 * 100.0;
+    const double target = 60.0 / double(interval);
     const Settings& st = g_settings;
+    const float k = std::clamp(height / 1080.0f, 0.5f, 3.0f);
     const ImVec2 size = ImGui::GetIO().DisplaySize;
-    const float m = 12 * scale;
-    int pos = std::clamp(st.overlay_position, 0, 3);
-    ImVec2 at{pos & 1 ? size.x - m : m, pos & 2 ? size.y - m : m};
+    const float m = 16 * k;
+    const int pos = std::clamp(st.overlay_position, 0, 3);
+    const ImVec2 at{pos & 1 ? size.x - m : m, pos & 2 ? size.y - m : m};
     ImGui::SetNextWindowPos(at, ImGuiCond_Always, {pos & 1 ? 1.0f : 0.0f, pos & 2 ? 1.0f : 0.0f});
-    ImGui::SetNextWindowBgAlpha(0.8f);
-    ImGuiWindowFlags f = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
-                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings;
+    const ui::Theme& th = ui::theme();
+    ImVec4 bg = ImGui::ColorConvertU32ToFloat4(th.panel);
+    bg.w = 0.82f;
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, bg);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16 * k, 12 * k));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12 * k);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12 * k, 3 * k));
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(6 * k, 1 * k));
+    const ImGuiWindowFlags f = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                               ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing |
+                               ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("##metrics", nullptr, f)) {
-        if (st.metric_fps) ImGui::Text("FPS  %.1f", fps);
-        if (st.metric_one_percent_low) ImGui::Text("1%% low  %.1f FPS", low);
-        if (st.metric_game_speed) ImGui::Text("Game speed  %.1f%%", speed);
-        if (st.metric_frametime_graph && count > 1) {
-            ImGui::TextDisabled("Frametime (ms)");
-            ImGui::PlotLines("##ft", samples.data(), int(count), 0, nullptr, 0.0f, 50.0f, {260 * scale, 80 * scale});
+        constexpr float kScale = 0.74f;
+        ImGui::SetWindowFontScale(kScale);
+        // green at the target frame rate, amber a little under it, red well under (MangoHud colours its numbers so)
+        const auto rate = [&](double v) {
+            return ImGui::ColorConvertU32ToFloat4(v >= target * 0.95 ? th.good : v >= target * 0.75 ? th.warn : th.bad);
+        };
+        const ImVec4 name_c = ImGui::ColorConvertU32ToFloat4(th.accent2), plain = ImGui::ColorConvertU32ToFloat4(th.text);
+        const auto line = [&](const char* name, const ImVec4& colour, const char* fmt, double v, const char* unit) {
+            ImGui::TableNextColumn();
+            ImGui::TextColored(name_c, "%s", name);
+            ImGui::TableNextColumn();
+            ImGui::PushFont(ui::title());  // (the numbers in the heavier face, at the body size)
+            ImGui::SetWindowFontScale(kScale * 40.0f / 72.0f);
+            ImGui::TextColored(colour, fmt, v);
+            ImGui::PopFont();
+            ImGui::SetWindowFontScale(kScale);
+            if (*unit) {
+                ImGui::SameLine(0, 5 * k);
+                ImGui::TextDisabled("%s", unit);
+            }
+        };
+        if (ImGui::BeginTable("##m", 2, ImGuiTableFlags_SizingFixedFit)) {
+            if (st.metric_fps) line("FPS", rate(fps), "%.0f", fps, "");
+            if (st.metric_fps && fps > 0) line("Frame", plain, "%.1f", 1000.0 / fps, "ms");
+            if (st.metric_one_percent_low) line("1% low", rate(low), "%.0f", low, "FPS");
+            if (st.metric_game_speed) line("Speed", speed >= 97 ? plain : ImGui::ColorConvertU32ToFloat4(th.warn), "%.0f", speed, "%");
+            ImGui::EndTable();
+        }
+        if (st.metric_frametime_graph && count > 1) {  // the frame times, 0-50 ms, with lines at 16.7 and 33.3 ms
+            ImGui::Dummy(ImVec2(0, 2 * k));
+            const ImVec2 p = ImGui::GetCursorScreenPos(), gs(300 * k, 64 * k);
+            ImGui::Dummy(gs);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(p, ImVec2(p.x + gs.x, p.y + gs.y), IM_COL32(255, 255, 255, 12), 6 * k);
+            const auto y_of = [&](float ms) { return p.y + gs.y - std::clamp(ms / 50.0f, 0.0f, 1.0f) * gs.y; };
+            for (float ms : {16.7f, 33.3f})
+                dl->AddLine(ImVec2(p.x, y_of(ms)), ImVec2(p.x + gs.x, y_of(ms)), IM_COL32(255, 255, 255, 36), 1.0f);
+            const float dx = gs.x / float(kHistory - 1);
+            const float x0 = p.x + gs.x - dx * float(count - 1);
+            std::array<ImVec2, kHistory> pts;
+            const float late = 17.5f * float(interval);
+            for (size_t i = 0; i < count; ++i) {
+                const float x = x0 + dx * float(i), y = y_of(samples[i]);
+                pts[i] = ImVec2(x, y);
+                const ImU32 c = samples[i] > 33.4f ? (th.bad & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 120)
+                                : samples[i] > late ? (th.warn & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 90)
+                                                    : (th.accent & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 34);
+                dl->AddRectFilled(ImVec2(x, y), ImVec2(x + dx + 0.5f, p.y + gs.y), c);
+            }
+            dl->AddPolyline(pts.data(), int(count), (th.accent & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 230), 0, std::max(1.0f, 1.5f * k));
         }
     }
     ImGui::End();
+    ImGui::PopStyleVar(4);
+    ImGui::PopStyleColor();
 }
 
 // Controller navigation: the pad (Nintendo button meanings) as ImGui's gamepad keys. A confirms, B cancels.
 void feed_pad(ImGuiIO& io) {
-    uint64_t b = g_pad_buttons.load();
-    int32_t lx = g_pad_lx.load(), ly = g_pad_ly.load();
+    const bool open = g_open.load();  // (closed and fading out: the menu takes no input)
+    uint64_t b = open ? g_pad_buttons.load() : 0;
+    int32_t lx = open ? g_pad_lx.load() : 0, ly = open ? g_pad_ly.load() : 0;
     struct Map {
         uint64_t bit;
         ImGuiKey key;
@@ -282,7 +308,11 @@ void presented(uint64_t now_ns) {
 
 void game_interval(int interval) { g_game_interval = std::max(1, interval); }
 
-bool frame_wanted() { return g_open || g_metrics || g_input_frames > 0; }
+bool frame_wanted() {
+    return g_open || g_metrics || g_input_frames > 0 || g_fading || progress_wanted() || ui::notices_active();
+}
+
+void notify(const char* text) { ui::notify(text); }
 
 void ensure_context() {
     if (ImGui::GetCurrentContext()) return;
@@ -293,20 +323,8 @@ void ensure_context() {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     io.BackendPlatformName = "nx_overlay";
-    style();
-    for (const char* path : kFonts)
-        if (FILE* f = std::fopen(path, "rb")) {
-            std::fclose(f);
-            if (io.Fonts->AddFontFromFileTTF(path, kFontBake, nullptr, io.Fonts->GetGlyphRangesDefault())) {
-                log("overlay: font %s", path);
-                break;
-            }
-        }
-    if (io.Fonts->Fonts.empty()) {
-        ImFontConfig c;
-        c.SizePixels = kFontBake;
-        io.Fonts->AddFontDefault(&c);
-    }
+    io.ConfigNavMoveSetMousePos = false;
+    ui::load_fonts();
 }
 
 ImDrawData* build_frame(uint32_t w, uint32_t h) {
@@ -317,7 +335,8 @@ ImDrawData* build_frame(uint32_t w, uint32_t h) {
     last_ns = now;
     io.DisplaySize = {float(w), float(h)};
     const float scale = std::clamp(float(h) / 720.0f, 0.75f, 4.0f);
-    io.FontGlobalScale = kFontSize * scale / kFontBake;
+    io.FontGlobalScale = ui::font_scale(float(h));
+    ui::apply_style(float(h));
 
     std::vector<Event> events;
     {
@@ -362,14 +381,27 @@ ImDrawData* build_frame(uint32_t w, uint32_t h) {
     static bool was_open = false;
     const bool appearing = open && !was_open;
     was_open = open;
-    if (g_settings.metrics_enabled) draw_metrics(scale);
-    if (open) {
-        MenuContext c{g_settings, g_host, g_capture, g_tab_request.exchange(-1), open, scale, appearing};
+    // the menu fades in over about 0.15 s and out a little faster (drawn, without input, until it's gone)
+    static float reveal = 0;
+    if (appearing) reveal = std::max(reveal, 0.04f);
+    reveal = ui::approach(reveal, open ? 1.0f : 0.0f, open ? 18.0f : 26.0f);
+    g_fading = !open && reveal > 0.0f;
+    if (progress_wanted()) draw_progress(float(h));
+    if (g_settings.metrics_enabled && !progress_wanted()) draw_metrics(float(h));  // (no game frames to measure yet)
+    if (open || reveal > 0.0f) {
+        const float a = ui::smoothstep(reveal);
+        ImGui::GetBackgroundDrawList()->AddRectFilled({0, 0}, io.DisplaySize, IM_COL32(4, 2, 10, int(120 * a)));
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, a);
+        bool still_open = open;
+        MenuContext c{g_settings, g_host, g_capture, open ? g_tab_request.exchange(-1) : -1, still_open, scale,
+                      appearing, float(h), reveal};
         draw_menu(c);
-        if (c.tab_request >= 0 && c.tab_request != g_tab) log("overlay: tab %d", c.tab_request);
-        if (c.tab_request >= 0) g_tab = c.tab_request;
-        if (!open) set_open(false, "menu"), g_capture = -1;
+        ImGui::PopStyleVar();
+        if (open && c.tab_request >= 0 && c.tab_request != g_tab) log("overlay: tab %d", c.tab_request);
+        if (open && c.tab_request >= 0) g_tab = c.tab_request;
+        if (open && !still_open) set_open(false, "menu"), g_capture = -1;
     }
+    ui::draw_notices(float(h));
     ImGui::Render();
     return ImGui::GetDrawData();
 }

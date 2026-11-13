@@ -720,6 +720,71 @@ void present_headless(uint64_t texture) {
     debug_dump_textures(presents);
 }
 
+// The startup shader preparation (nvn_shader_prepare.cpp, nvn_pipeline.cpp) runs inside the first gpu_submit or
+// gpu_present, under the GPU lock, before the game has drawn anything. Its progress goes to the platform (the Win32
+// window's painted screen when the ImGui overlay is off) and to the overlay's compile screen, which is presented here
+// on its own: a cleared swapchain image with the overlay on top, at most 30 times a second.
+void prep_progress(uint64_t done, uint64_t total, bool visible, int kind) {
+    plat::shader_compile_progress(done, total, visible);
+    overlay::shader_progress(done, total, visible, kind);
+    if (!visible || !overlay::enabled() || !g_device) return;
+    static uint64_t last = 0;
+    const uint64_t now = plat::monotonic_ns();
+    if (last && now - last < 33'000'000ull) return;
+    last = now;
+    static const bool headless_present = std::getenv("NX_HEADLESS_PRESENT") != nullptr;
+    if ((plat::headless() && !headless_present) || plat::window_minimized()) return;
+    if (!g_swapchain && !make_swapchain()) return;
+    uint32_t index = 0;
+    VkSemaphore acquired = async_gpu() ? frame_acquire_semaphore() : g_acquired;
+    VkResult r = p_vkAcquireNextImageKHR(g_device, g_swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE, &index);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+        make_swapchain();
+        return;
+    }
+    if (!check(r, "vkAcquireNextImageKHR (compile screen)") || !begin()) return;
+    GpuImage dst;
+    dst.image = g_sc_images[index];
+    dst.format = g_sc_format;
+    dst.width = g_sc_extent.width, dst.height = g_sc_extent.height;
+    transition(g_cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkClearColorValue v{{0.035f, 0.024f, 0.07f, 1.0f}};
+    VkImageSubresourceRange rr{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    p_vkCmdClearColorImage(g_cb, dst.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &v, 1, &rr);
+    transition(g_cb, dst, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    overlay::record(g_cb, index, g_sc_images, g_sc_format, g_sc_extent);
+    // NX_DUMP_PRESENTED with NX_DUMP_PREP=<n>: every nth compile-screen frame to frames/9NNNNN.ppm (tests)
+    static const uint64_t dump_every = [] {
+        const char* e = std::getenv("NX_DUMP_PREP");
+        return e ? std::strtoull(e, nullptr, 10) : 0ull;
+    }();
+    static uint64_t shown = 0;
+    shown++;
+    const bool dump = dump_every && dump_presented() && (g_sc_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
+                      shown % dump_every == 0;
+    if (dump) {
+        dst.layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        transition(g_cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        frame_dump_record(g_cb, dst);
+        transition(g_cb, dst, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    }
+    static const bool shared_sem = std::getenv("NX_SHARED_PRESENT_SEMAPHORE") != nullptr;
+    VkSemaphore rendered = async_gpu() || !shared_sem ? frame_rendered_semaphore(index) : g_rendered;
+    if (async_gpu())
+        frame_submit(acquired, rendered, {}, dump);
+    else
+        end_and_wait(acquired, rendered);
+    if (dump) frame_dump_write(dst, 900000 + shown);
+    VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &rendered;
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &g_swapchain;
+    pi.pImageIndices = &index;
+    r = p_vkQueuePresentKHR(g_queue, &pi);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) make_swapchain();
+}
+
 void gpu_present(uint64_t texture, const int32_t* crop) {
     plat::perf_hint_thread();  // the thread that presents takes part in the frame (perf_hint.cpp)
     std::lock_guard lk(g_gpu);

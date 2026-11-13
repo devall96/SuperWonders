@@ -55,6 +55,14 @@ void filter_pad(plat::PadState& p);
 void presented(uint64_t now_ns);   // after each present (plat::overlay_presented)
 void game_interval(int interval);  // the game's swap interval in 60 Hz ticks (plat::overlay_game_interval)
 
+// ---- startup shader preparation (any thread) ----
+// What the compile screen shows: `done` of `total`, kind 0 compiling the game's shaders, 1 preparing pipelines seen in
+// earlier sessions. visible false: finished (the screen fades out over the first game frames).
+void shader_progress(uint64_t done, uint64_t total, bool visible, int kind);
+
+// ---- notices (any thread) ----
+void notify(const char* text);  // a short notice in the bottom-right corner (overlay_ui.h)
+
 // ---- rendering (the presenting thread, GPU lock held) ----
 // Draws into swapchain image `index` (in PRESENT_SRC layout, left in it). `images` are the swapchain's images; a
 // change re-makes the framebuffers. False when nothing was drawn.
