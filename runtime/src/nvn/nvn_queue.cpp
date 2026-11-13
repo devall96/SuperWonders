@@ -19,6 +19,7 @@
 
 #include "nvn.h"
 #include "platform.h"
+#include "frametrace.h"
 
 namespace nx {
 uint64_t vsync_wait(uint64_t target);  // hle_vi.cpp
@@ -415,14 +416,18 @@ void QueuePresentTexture(CPU& c) {
         // At most two presents queued: the game runs at most two frames ahead of the replay.
         static uint64_t queued[2] = {};
         static int next_slot = 0;
+        const uint64_t t_wait = plat::monotonic_ns();
         worker_wait(queued[next_slot]);
+        const uint64_t replay_wait_ns = plat::monotonic_ns() - t_wait;
         if (int(c.x[2]) >= 0 && size_t(c.x[2]) < w->textures.size()) {
             uint64_t texture = w->textures[size_t(c.x[2])];
             std::array<int32_t, 4> crop{w->crop[0], w->crop[1], w->crop[2], w->crop[3]};
             queued[next_slot] = worker_run([texture, crop] { gpu_present(texture, crop.data()); });
             next_slot ^= 1;
         }
+        const uint64_t t_pace = plat::monotonic_ns();
         pace_present(w->interval);
+        ft::guest_present(replay_wait_ns, plat::monotonic_ns() - t_pace, w->interval);  // frametrace.h
     }
     work_from = plat::monotonic_ns();
     uint64_t n = ++g_presents;

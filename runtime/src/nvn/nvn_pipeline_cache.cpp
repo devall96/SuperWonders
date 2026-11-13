@@ -12,6 +12,7 @@
 #include "nvn_pipeline_async.h"
 #include "nvn_vk.h"
 #include "platform.h"
+#include "frametrace.h"
 
 namespace nx::nvn {
 
@@ -108,8 +109,12 @@ VkPipelineCache pipeline_cache() {
 void pipeline_cache_save(bool force) { save_pipeline_cache(force); }
 
 void note_pipeline_cache_changed() { g_cache_dirty.store(true, std::memory_order_release); }
-void note_pipeline_created(uint64_t ns) { note_pipeline_cache_changed(); g_pipelines++, g_pipeline_ns += ns; }
-void note_astc_decoded(uint64_t ns) { g_astc++, g_astc_ns += ns; }
+void note_pipeline_created(uint64_t ns) {
+    note_pipeline_cache_changed();
+    g_pipelines++, g_pipeline_ns += ns;
+    ft::add(ft::kPipelines), ft::add(ft::kPipelineNs, ns);
+}
+void note_astc_decoded(uint64_t ns) { g_astc++, g_astc_ns += ns, ft::add(ft::kAstc), ft::add(ft::kAstcNs, ns); }
 
 // One line per timing window (nvn_vk.cpp log_timing): what the replay created, and the time it took.
 void creation_log(uint64_t frames) {

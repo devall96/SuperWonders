@@ -11,6 +11,7 @@
 #include <nx/runtime.h>
 
 #include "platform.h"
+#include "frametrace.h"
 
 namespace nx {
 
@@ -66,6 +67,7 @@ void log(const char* fmt, ...) {
         g_log_file = plat::fopen_utf8(file, "w");
     }
     plat::log_line(buf);
+    ft::add(ft::kLogLines);  // the frame trace's log position (frametrace.h)
     if (g_log_file) {
         std::fprintf(g_log_file, "%s\n", buf);
         std::fflush(g_log_file);
