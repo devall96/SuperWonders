@@ -55,6 +55,11 @@ VkExtent2D g_sc_extent{};
 VkExtent2D g_sc_current{};  // the surface's currentExtent when the swapchain was made (SUBOPTIMAL: did it change?)
 VkSurfaceTransformFlagBitsKHR g_sc_transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 VkFormat g_sc_format = VK_FORMAT_B8G8R8A8_UNORM;
+VkImageUsageFlags g_sc_usage = 0;  // the swapchain images' usage (make_swapchain)
+bool dump_presented() {
+    static const bool on = std::getenv("NX_DUMP_PRESENTED") != nullptr;
+    return on;
+}
 VkSemaphore g_acquired = VK_NULL_HANDLE, g_rendered = VK_NULL_HANDLE;
 VkBool32 g_depth_clip_control = VK_FALSE;
 bool g_gpl = false, g_cache_control = false;  // vk_gpl(), vk_pipeline_cache_control()
@@ -387,6 +392,9 @@ bool make_swapchain() {
     ci.imageExtent = extent;
     ci.imageArrayLayers = 1;
     ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    // NX_DUMP_PRESENTED=1 (tests): frame dumps read the swapchain image itself, the overlay included
+    if (dump_presented() && (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT))
+        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.preTransform = caps.currentTransform;
     // The present pass (nvn_present.cpp) draws the picture pre-rotated: the images are in the display's own
@@ -444,6 +452,7 @@ bool make_swapchain() {
     log("nvn/vk: present mode %s (%u modes offered)", ci.presentMode <= 3 ? mode_names[ci.presentMode] : "?", modes_n);
     ci.clipped = VK_TRUE;
     if (!check(p_vkCreateSwapchainKHR(g_device, &ci, nullptr, &g_swapchain), "vkCreateSwapchainKHR")) return false;
+    g_sc_usage = ci.imageUsage;
     uint32_t n = 0;
     p_vkGetSwapchainImagesKHR(g_device, g_swapchain, &n, nullptr);
     g_sc_images.resize(n);
@@ -810,9 +819,18 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
     const bool due = frame_dump_due(presents);
     GpuImage* shown = src;  // NX_DUMP_FSR: the image as presented (after FXAA and FSR 1)
     if (std::getenv("NX_DUMP_FSR")) shown = upscaled && fsr_output() ? fsr_output() : in;
+    // NX_DUMP_PRESENTED: the swapchain image as it goes to the display (after the overlay), back to PRESENT_SRC after
+    // the copy. Needs the TRANSFER_SRC usage make_swapchain asked for.
+    GpuImage presented = dst;
+    if (dump_presented() && (g_sc_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+        presented.width = g_sc_extent.width, presented.height = g_sc_extent.height;
+        presented.layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        shown = &presented;
+    }
     bool dump = shown && due;
     if (dump) transition(g_cb, *shown, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);  // the present pass left it sampled
     dump = dump && frame_dump_record(g_cb, *shown);
+    if (shown == &presented && due) transition(g_cb, presented, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     // One per swapchain image on both paths: a single semaphore could be signaled again while an earlier present
     // still waited on it (VUID-vkQueueSubmit-pSignalSemaphores-00067). NX_SHARED_PRESENT_SEMAPHORE=1: as before.
     static const bool shared_sem = std::getenv("NX_SHARED_PRESENT_SEMAPHORE") != nullptr;
