@@ -85,6 +85,11 @@ def entries(root, save):
     if not os.path.isfile(exe):
         sys.exit(f"missing {exe} (build it first)")
     yield exe, "wonder.exe"
+    # A build with the game code in its own library (NX_GAME_LIBRARY, the default): the library and the C++ runtime
+    # it shares with the program, next to it.
+    for f in ("wonder_game.dll", "libc++.dll", "libunwind.dll"):
+        if os.path.isfile(os.path.join(root, "build", f)):
+            yield os.path.join(root, "build", f), f
     yield from redist_dlls()
     yield from tree(os.path.join(root, "analysis"), "data/analysis")
     yield from tree(os.path.join(root, "extract", "romfs"), "data/extract/romfs")

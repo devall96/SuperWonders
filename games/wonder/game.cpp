@@ -2,13 +2,12 @@
 // The game draws through NVN (docs/NVN.md); what we know about it is in docs/nvn/WONDER.md.
 #include <nx/game.h>
 #include <nx/runtime.h>
+#include <nx/gamelib.h>
 #include <nx/module.h>
 
 #include <cstring>
 
 #include "platform.h"
-
-extern const nx::ModuleInfo nx_module_main;
 
 namespace nx {
 
@@ -29,6 +28,7 @@ static uint32_t float_bits(float value) {
 // classifying these game-side values is needed to expand the camera while preserving HUD layout.
 static void trace_screen_globals() {
     if (plat::setting("wonder_widescreen_trace") != "1") return;
+    const ModuleInfo& nx_module_main = *game_lib().main;
     const uint64_t begin = nx_module_main.base + nx_module_main.data;
     const uint64_t end = nx_module_main.base + nx_module_main.bss + nx_module_main.bss_size;
     const uint32_t pairs[][2] = {
