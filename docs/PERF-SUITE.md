@@ -59,8 +59,23 @@ headless surface offers present wait, but waiting crashes in the driver).
     tools/perf/perf_suite.sh --out DIR [--runs 2] [--scenarios "warm cold idle"] [--display offscreen|window]
                              [--ini FILE] [--baseline DIR] [--env VAR=VALUE ...]
 
-Scenarios, each from `fixtures/save-course11` along the quick_course timeline (title, user, character, world map,
-course 1-1 to the right):
+**Course scenarios (the default):** course 1-1 played to the goal, from `fixtures/save-course11`: the user's own run
+(`tools/play/routes/course11.frames`, recorded on Ubuntu with `NX_INPUT_RECORD`, `docs/PLAY-TOOLS.md`) replayed per game
+frame through the menus, the world map and the course. The "play" report covers the player's first move (`@go`) to the
+goal (`tools/perf/game_window.py` maps the game frames onto the trace); `<run>.route.md` says where the player went and
+whether the goal was reached. The game is not fully deterministic, so a replay can leave the recorded path; if it dies,
+the probe bot finishes the course (`NX_PLAY_FALLBACK=bot`) and the run's line says so. `--route FILE` replays another
+recording.
+
+- `course11`: caches as they are; stops 3 s after the goal (at most 400 s).
+- `course11-cold`: no pipeline caches, as `cold` below (at most 460 s).
+
+Windows, RX 9070 XT, warm, offscreen, two replays (2026-11-13): both reached the goal in 2899 and 2901 frames after `@go`
+(the user's run: 2899); avg 59.5 fps, 1% low 23.8 / 26.6, 0.1% low 14.3 / 15.0, max 72 / 69 ms, 6 frames over 50 ms
+each; hitches mostly `replay_cpu` and `page_faults`.
+
+The older scenarios, each from `fixtures/save-course11` along the quick_course timeline (wall-clock input: title,
+user, character, world map, course 1-1 to the right; the player mostly stands near the start):
 
 - `warm`: caches as they are, 90 s.
 - `cold`: no pipeline caches (put back afterwards) and, on Linux, Mesa's shader cache off; the input starts 30 s later

@@ -382,6 +382,7 @@ struct Bot {
     int64_t jump_from = -1000, ground_since = -1;
 };
 Bot g_bot;
+bool g_fallback_bot = false;
 const Item* g_bot_item = nullptr;
 
 void bot_config(const std::string& arg) {
@@ -650,6 +651,17 @@ void file_opened(const std::string& path) {
         fire(kEvDeath);
         armed = "course";
         g_player = 0, g_track_n = 0;
+        // NX_PLAY_FALLBACK=bot: a replay that died has left the recorded run; the bot takes over (perf runs that
+        // must reach the goal: tools/perf/perf_suite.sh "course11").
+        static const bool fallback = [] {
+            const char* e = std::getenv("NX_PLAY_FALLBACK");
+            return e && std::strcmp(e, "bot") == 0;
+        }();
+        if (fallback && g_script_on && !g_fallback_bot) {
+            g_fallback_bot = true, g_bot = Bot{};
+            g_marks += std::string(g_marks.empty() ? "" : "|") + "fallback_bot";
+            log("play: the replay died at frame %llu: the bot plays from here (NX_PLAY_FALLBACK=bot)", (unsigned long long)g_frame.load());
+        }
         return;
     }
     if (stream.rfind("BGM_Jingle_", 0) == 0 && (stream.find("Goal") != std::string::npos || stream.find("Clear") != std::string::npos)) {
@@ -687,6 +699,10 @@ void pad(PadState& p) {
                 bot_pad(p, int64_t(fr));
             }
         }
+    }
+    if (g_fallback_bot) {
+        p = PadState{};
+        bot_pad(p, int64_t(fr));
     }
     if (fr != g_last_pad_frame) {
         g_last_pad_frame = fr;

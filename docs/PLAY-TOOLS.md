@@ -50,6 +50,19 @@ opening) jitters by a frame or two against the game, and Wonder amplifies that: 
 anchored on `@course` reached the goal 150-320 frames apart. Recordings therefore also carry `@go` (the player's first
 movement), which the probe ties to the game's own state.
 
+Measured since (2026-11-13, segments starting at the first pad read after the event, `@go` anchoring the course):
+- The user's take 2 of 1-1 (Ubuntu), replayed twice on Windows: same pad input every frame; both reached the goal,
+  2899 and 2901 frames after `@go` (the user's: 2899), at most 3.5 blocks apart mid-course and within 0.1 at the goal.
+- The user's take 1 (a turn while dashing at go+317) left the recorded path at go+332 in every replay, and two
+  Windows replays left it differently, so this is the game (thread or actor timing; suspected, not proven), not Linux
+  vs Windows. Neither of those replays reached the goal. The perf suite therefore lets the bot finish a replay that
+  dies (`NX_PLAY_FALLBACK=bot`).
+- `@go` fires when the player's x first changes, which in practice is the frame the course places the player (x leaves
+  0.0): two replays saw x 20.71 and 20.94 there, about one frame of movement apart.
+
+`NX_PLAY_FALLBACK=bot`: when a replay dies, the bot plays the rest (the log and the probe's `mark` say
+`fallback_bot`).
+
 ## The probe: `NX_PROBE=<file.csv>`
 
 One row per game frame: `frame, t_ms, seg, rel, pad_reads, buttons, lx, ly, scene, course, player, px, py, pz, vx, vy,

@@ -3,9 +3,18 @@
 # reports each run (tools/perf/frametrace_report.py) and writes a summary across runs, optionally gated on a baseline.
 #
 #   tools/perf/perf_suite.sh --out DIR [--runs 2] [--scenarios "warm cold"] [--display offscreen|window]
-#                            [--ini FILE] [--baseline DIR] [--exe PATH] [--data-root DIR] [--env VAR=VALUE ...]
+#                            [--ini FILE] [--baseline DIR] [--exe PATH] [--data-root DIR] [--route FILE]
+#                            [--env VAR=VALUE ...]
 #
-# Scenarios (course 1-1 from the fixture save: title, user, character, world map, course 1-1 played to the right):
+# Scenarios that play course 1-1 for real (docs/PLAY-TOOLS.md): a recorded run replayed per game frame
+# (NX_INPUT_REPLAY, default tools/play/routes/course11.frames, --route to change), from the fixture save, through the
+# menus and the world map to the goal. If the replay dies (it can leave the recorded path: the game is not fully
+# deterministic), the probe bot takes over (NX_PLAY_FALLBACK=bot) so the run still reaches the goal; the report says so.
+# The "play" report covers the player's first move (@go) to the goal; the run stops 3 s after the goal.
+#   course11       the caches as they are; at most 400 s
+#   course11-cold  no pipeline caches (as cold below); at most 460 s
+#
+# The older scenarios (wall-clock input, course 1-1 played to the right; the player mostly stands near the start):
 #   warm   the caches as they are; 90 s
 #   cold   no pipeline caches (moved aside, put back after) and, on Linux, Mesa's disk cache off; startup shader
 #          preparation runs first, so the input script starts 30 s later; 130 s
@@ -18,12 +27,13 @@
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-OUT=""; RUNS=2; SCEN="warm cold"; DISPLAY_MODE=offscreen; INI=""; BASE=""; EXE=""; W=""; EXTRA=()
+OUT=""; RUNS=2; SCEN="course11 course11-cold"; DISPLAY_MODE=offscreen; INI=""; BASE=""; EXE=""; W=""; EXTRA=()
+ROUTE=$ROOT/tools/play/routes/course11.frames
 while [ $# -gt 0 ]; do
     case $1 in
     --out) OUT=$2; shift ;; --runs) RUNS=$2; shift ;; --scenarios) SCEN=$2; shift ;;
     --display) DISPLAY_MODE=$2; shift ;; --ini) INI=$2; shift ;; --baseline) BASE=$2; shift ;;
-    --exe) EXE=$2; shift ;; --data-root) W=$2; shift ;; --env) EXTRA+=("$2"); shift ;;
+    --exe) EXE=$2; shift ;; --data-root) W=$2; shift ;; --env) EXTRA+=("$2"); shift ;; --route) ROUTE=$2; shift ;;
     *) echo "unknown option $1"; exit 2 ;;
     esac
     shift
@@ -78,12 +88,19 @@ run_one() {  # scenario run#
     local sc=$1 i=$2 tag=$1-$2 secs off input mesa=""
     case $sc in
     warm) secs=90; off=0 ;; cold) secs=130; off=30 ;; idle) secs=40; off=-1 ;;
+    course11) secs=400; off=-1 ;; course11-cold) secs=460; off=-1 ;;
     *) echo "unknown scenario $sc"; return ;;
     esac
     input=""; [ $off -ge 0 ] && input=$(script $off)
     rm -rf "$W/user/save"; cp -r "$W/fixtures/save-course11" "$W/user/save"
     rm -f "$W/pc-settings.ini"; [ -n "$INI" ] && cp "$INI" "$W/pc-settings.ini"
-    if [ $sc = cold ]; then
+    local EXTRA_RUN=() rp pp
+    case $sc in course11*)
+        [ -f "$ROUTE" ] || { echo "no route $ROUTE"; return; }
+        if [ $WIN = 1 ]; then rp=$(cygpath -w "$ROUTE"); pp=$(cygpath -w "$OUT/$tag.probe.csv"); else rp=$ROUTE; pp=$OUT/$tag.probe.csv; fi
+        EXTRA_RUN=(NX_INPUT_REPLAY="$rp" NX_PROBE="$pp" NX_PLAY_FALLBACK=bot) ;;
+    esac
+    if [ $sc = cold ] || [ $sc = course11-cold ]; then
         mkdir -p "$KEEP/caches"; (cd "$W" && for p in $CACHES; do [ -e "$p" ] && mv "$p" "$KEEP/caches/"; done)
         [ $WIN = 0 ] && mesa=MESA_SHADER_CACHE_DISABLE=true
     fi
@@ -95,14 +112,35 @@ run_one() {  # scenario run#
     [ $WIN = 1 ] && disp+=(NX_DATA_ROOT="$(cygpath -w "$W")")
     echo "== $tag ($secs s)"
     (cd "$ROOT" && env ${mesa:+$mesa} "${disp[@]}" NX_MUTE=1 NX_LOG="$OUT/$tag.log" NX_FRAMETRACE="$OUT/$tag.csv" \
-        NX_INPUT_SCRIPT="$input" "${EXTRA[@]}" timeout $secs "$EXE" >"$OUT/$tag.out" 2>&1)
-    if [ $sc = cold ]; then
+        NX_INPUT_SCRIPT="$input" "${EXTRA_RUN[@]}" "${EXTRA[@]}" timeout $secs "$EXE" >"$OUT/$tag.out" 2>&1) &
+    local game=$! t0=$(date +%s)
+    # A course run ends 3 s after the goal.
+    while kill -0 $game 2>/dev/null; do
+        sleep 2
+        if [ ${#EXTRA_RUN[@]} -gt 0 ] && grep -q "play: event goal" "$OUT/$tag.log" 2>/dev/null; then
+            sleep 3
+            if [ $WIN = 1 ]; then
+                for pid in $(tasklist //FI "IMAGENAME eq $(basename "$EXE")" //FO CSV //NH 2>/dev/null | cut -d, -f2 | tr -d '"'); do taskkill //F //PID "$pid" >/dev/null 2>&1; done
+            else pkill -x "$(basename "$EXE")"; fi
+            break
+        fi
+    done
+    wait $game 2>/dev/null
+    if [ ${#EXTRA_RUN[@]} -gt 0 ]; then
+        echo "   $(($(date +%s) - t0)) s$(grep -q 'play: event goal' "$OUT/$tag.log" && echo ', reached the goal' || echo ', NO GOAL')$(grep -q 'play: the replay died' "$OUT/$tag.log" && echo ' (the replay died; the bot finished)')"
+    fi
+    if [ $sc = cold ] || [ $sc = course11-cold ]; then
         (cd "$W" && for p in $CACHES; do [ -e "$p" ] && rm -f "$p"; done); mv "$KEEP/caches"/* "$W/" 2>/dev/null; rmdir "$KEEP/caches"
     fi
     # "play": from 5 s after the first frame (skips the boot and the startup preparation)
     local first=$($PY -c "import csv,sys;r=[x for x in csv.DictReader(open(sys.argv[1]))];print(float(r[1]['t_ms'])/1000 if len(r)>1 else 0)" "$OUT/$tag.csv" 2>/dev/null || echo 0)
-    local from=$(awk "BEGIN{print $first+5}")
-    $PY "$HERE/frametrace_report.py" "$OUT/$tag.csv" --log "$OUT/$tag.log" --from-s "$from" --label "$tag play" --json "$OUT/$tag.play.json" > "$OUT/$tag.play.md"
+    local from=$(awk "BEGIN{print $first+5}") to=""
+    if [ ${#EXTRA_RUN[@]} -gt 0 ]; then  # the player's first move (@go) to the goal
+        read from to _ _ < <($PY "$HERE/game_window.py" "$OUT/$tag.csv" "$OUT/$tag.log")
+        [ "$to" = "-1.000" ] && to=""
+        $PY "$ROOT/tools/play/play_report.py" "$OUT/$tag.probe.csv" --log "$OUT/$tag.log" --expect goal > "$OUT/$tag.route.md"
+    fi
+    $PY "$HERE/frametrace_report.py" "$OUT/$tag.csv" --log "$OUT/$tag.log" --from-s "$from" ${to:+--to-s "$to"} --label "$tag play" --json "$OUT/$tag.play.json" > "$OUT/$tag.play.md"
     $PY "$HERE/frametrace_report.py" "$OUT/$tag.csv" --log "$OUT/$tag.log" --label "$tag all" --json "$OUT/$tag.all.json" > "$OUT/$tag.all.md"
     sed -n 5p "$OUT/$tag.play.md"
 }

@@ -63,8 +63,11 @@ running() { if [ $WIN = 1 ]; then tasklist //FI "IMAGENAME eq $(basename "$EXE")
 LOCK=""
 if [ $WIN = 1 ]; then
     LOCK=/c/SuperWonders-private/gpu.lock
-    for i in $(seq 720); do [ -f "$LOCK" ] || break; [ $i = 720 ] && { echo "gpu.lock held: $(cat "$LOCK")"; exit 1; }; sleep 5; done
-    echo "play-tools $(date +%Y-%m-%dT%H:%M:%S) run" > "$LOCK"
+    # Taken atomically: noclobber makes the create fail when another session made it first.
+    for i in $(seq 720); do
+        (set -C; echo "play-tools $(date +%Y-%m-%dT%H:%M:%S) run" > "$LOCK") 2>/dev/null && break
+        [ $i = 720 ] && { echo "gpu.lock held: $(cat "$LOCK")"; exit 1; }; sleep 5
+    done
 fi
 CACHES='pipelines_*.bin pipeline_keys_*.bin shader_prepare_*.done'
 ASIDE=$OUT/.caches-aside
