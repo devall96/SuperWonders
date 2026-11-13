@@ -173,6 +173,11 @@ namespace SpirvHarness
 
         // Host = MoltenVK on the Apple M1 (docs/nvn/WONDER.md), with the choices Ryujinx's Vulkan backend makes.
         public bool QueryHostReducedPrecision() => true;                 // Ryujinx does this on MoltenVK
+        // NX_HOST_GATHER_BIAS=<bits>: Ryujinx's texture-gather coordinate bias for hosts that are not NVIDIA (their
+        // subTexelPrecisionBits, 8 on AMD); 0 or unset: no bias, as before. The TotK and Savage Wind recomps set it on
+        // every non-NVIDIA GPU (yuzu did it for BotW's shadows on AMD).
+        public int QueryHostGatherBiasPrecision() =>
+            int.TryParse(System.Environment.GetEnvironmentVariable("NX_HOST_GATHER_BIAS"), out int bits) ? bits : 0;
         public bool QueryHostSupportsGeometryShader() => false;
         public bool QueryHostSupportsGeometryShaderPassthrough() => false;
         public bool QueryHostSupportsTransformFeedback() => false;
