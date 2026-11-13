@@ -1,33 +1,48 @@
 #!/usr/bin/env python3
 """Builds the recomp's own entries into Wonder's menus as a RomFS mod (docs/MENU.md).
 
-Today: a "Quit Game" button in the pause menu, under "Exit Course". It is the game's own button (a copy of the
-L_BtnExit part, same look and animations), its label is in every language, and it reports the new PauseResult value
-QuitToDesktop, which the runtime adds to the game's enum and acts on (games/wonder/menu.cpp).
+"Quit Game" in two places, each the game's own look, with its label in every language:
+- the pause menu in a course, under "Exit Course": a copy of the L_BtnExit part (same look and animations) that
+  reports the new PauseResult value QuitToDesktop;
+- the title screen: a "(-) Quit Game" line in the corner. The title has no buttons (it waits for L + R), so Minus
+  there quits, and the line says so.
+games/wonder/menu.cpp acts on both. (The world map's menu is left alone: at 1.0.0 its cursor never stops on an
+added button; docs/MENU.md.)
 
-Reads the RomFS from private/wonder/extract/romfs and writes private/wonder/mods/recomp-menu/romfs/:
-  Layout/Pause.Nin_NX_NVN.blarc.zs   the pause layout with the L_QuitBtn pane
-  Pack/Bootup.Nin_NX_NVN.pack.zs     the pause screen's button table with the QuitToDesktop button
-  Mals/<lang>.Product.120.sarc.zs    the button's label (LayoutMsgRef/PauseRef.msbt)
-  System/Resource/ResourceSizeTable.Product.120.rsizetable.zs   those files' sizes (they grew)
-Run it again after the RomFS changes (a game update). Needs the zstandard module.
+Reads the RomFS (the game's own, 1.0.0 or later) and writes <out>/romfs/:
+  Layout/Pause.Nin_NX_NVN.blarc.zs    the pause layout with the L_QuitBtn pane
+  Layout/Title.Nin_NX_NVN.blarc.zs    the title layout with the T_QuitGame line
+  Pack/Bootup.Nin_NX_NVN.pack.zs      the pause screen's button table with the QuitToDesktop button
+  Mals/<lang>.Product.<v>.sarc.zs     the labels (LayoutMsgRef/PauseRef, TitleRef)
+  System/Resource/ResourceSizeTable.Product.<v>.rsizetable.zs   those files' sizes (they grew)
+Run it again after the RomFS changes (a game update). Uses the zstandard module, or the system's libzstd.
 
 Usage: python tools/wonder_menu_mod.py [--romfs <dir>] [--out <mod dir>]
 """
 import argparse
 import os
 import struct
+import glob
 import zlib
 
-import zstandard
+try:
+    import zstandard
+except ImportError:  # the system's libzstd through ctypes (Linux, MSYS2/Git for Windows)
+    zstandard = None
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 QUIT_PANE = "L_QuitBtn"
-QUIT_ENUM = "QuitToDesktop"  # game::sequence::PauseResult value 8, added by games/wonder/menu.cpp
+QUIT_ENUM = "QuitToDesktop"  # the PauseResult name games/wonder/menu.cpp acts on
 QUIT_Y = -265.0  # one button step (130) under L_BtnExit
 ICON_ROW_Y = -405.0  # the round buttons (Settings, Control Guide...) move down to make room: from -355
 ICON_PANES = ("L_PlayerChangeBtn", "L_OptionBtn", "L_HelpBtn", "L_AmiiboBtn")
+# The title screen: a text line (a copy of "Press L + R to Start") in the bottom right corner, placed relative to
+# T_PressStart (at 0, -418 on the screen).
+# The line under each of the two "Press L + R to Start" panes (the game shows one of them, by region).
+TITLE_PANES = {"T_PressStart": "T_QuitGame", "T_PressStart_USEU": "T_QuitGameUS"}
+TITLE_POS, TITLE_SCALE = (700.0, -62.0), 0.75
+MINUS = "\ue0f0"  # the Minus button's glyph in the game's font (GameMsg/Key.msbt "Minus")
 QUIT_TEXT = {
     "USen": "Quit Game", "EUen": "Quit Game", "USfr": "Quitter le jeu", "EUfr": "Quitter le jeu",
     "USes": "Salir del juego", "EUes": "Salir del juego", "EUde": "Spiel beenden", "EUit": "Esci dal gioco",
@@ -39,8 +54,47 @@ QUIT_TEXT = {
 
 # ---- zstd + SARC -------------------------------------------------------------------------------------------------
 
+def _libzstd():
+    import ctypes
+    import ctypes.util
+    names = [ctypes.util.find_library("zstd"), "libzstd.so.1", "libzstd.dylib", "libzstd.dll",
+             r"C:\Program Files\Git\ucrt64\bin\libzstd.dll", r"C:\msys64\ucrt64\bin\libzstd.dll"]
+    for n in names:
+        try:
+            z = ctypes.CDLL(n) if n else None
+        except OSError:
+            continue
+        if z:
+            z.ZSTD_getFrameContentSize.restype = ctypes.c_ulonglong
+            for f in ("ZSTD_decompress", "ZSTD_compress", "ZSTD_compressBound"):
+                getattr(z, f).restype = ctypes.c_size_t
+            z.ZSTD_isError.restype = ctypes.c_uint
+            return ctypes, z
+    raise SystemExit("needs zstd: pip install zstandard (or a system libzstd)")
+
+
 def unzs(path):
-    return zstandard.ZstdDecompressor().decompress(open(path, "rb").read(), max_output_size=1 << 31)
+    src = open(path, "rb").read()
+    if zstandard:
+        return zstandard.ZstdDecompressor().decompress(src, max_output_size=1 << 31)
+    ctypes, z = _libzstd()
+    n = z.ZSTD_getFrameContentSize(src, ctypes.c_size_t(len(src)))
+    assert n < 1 << 31, f"{path}: no content size in the zstd frame"
+    dst = ctypes.create_string_buffer(n)
+    r = z.ZSTD_decompress(dst, ctypes.c_size_t(n), src, ctypes.c_size_t(len(src)))
+    assert not z.ZSTD_isError(r) and r == n, f"{path}: zstd error"
+    return dst.raw
+
+
+def zs(data):
+    if zstandard:
+        return zstandard.ZstdCompressor(level=19).compress(data)
+    ctypes, z = _libzstd()
+    cap = z.ZSTD_compressBound(ctypes.c_size_t(len(data)))
+    dst = ctypes.create_string_buffer(cap)
+    r = z.ZSTD_compress(dst, ctypes.c_size_t(cap), data, ctypes.c_size_t(len(data)), 19)
+    assert not z.ZSTD_isError(r), "zstd error"
+    return dst.raw[:r]
 
 
 def sarc_nodes(d):
@@ -252,6 +306,49 @@ def patch_pause_layout(d):
     return bytes(out)
 
 
+def patch_title_layout(d):
+    """The "(Minus) Quit Game" line: a copy of the T_PressStart_USEU text pane (the game's title font and look) as a
+    child of each of the two "Press L + R to Start" text panes, T_PressStart and T_PressStart_USEU (TITLE_PANES). The
+    game shows one of them by region and hides it once the title is left (the title layout stays up behind the user
+    and character screens; a line beside them stayed visible there), and children go with their parent. The parents
+    get the "influenced alpha" flag, so a fade of the parent fades the line too. Each line's text is the TitleRef.msbt
+    label of its own name; the copy's own text (shown if no label is found) is set to the English one."""
+    out = bytearray(d)
+    src, parents = None, {}
+    for o, magic, size in flyt_sections(d):
+        name = pane_name(d, o) if magic == b"txt1" else None
+        if name == "T_PressStart_USEU":
+            src = (o, size)
+        if name in TITLE_PANES:
+            parents[name] = o
+        if name in TITLE_PANES.values():
+            raise SystemExit("the title layout already has " + name)
+    assert src and len(parents) == len(TITLE_PANES), "T_PressStart / T_PressStart_USEU not found in Title.bflyt"
+    o, size = src
+    template = bytes(out[o:o + size])
+    # Last parent first, so the offsets of the earlier ones stay right.
+    for parent, po in sorted(parents.items(), key=lambda kv: -kv[1]):
+        psize = struct.unpack_from("<I", out, po + 4)[0]
+        nxt = po + psize
+        if out[nxt:nxt + 4] == b"usd1":  # the parent's user data stays right after it
+            nxt += struct.unpack_from("<I", out, nxt + 4)[0]
+        assert out[nxt:nxt + 4] != b"pas1", parent + " already has children"
+        out[po + 8] |= 0x02  # influenced alpha: its children take its alpha
+        clone = bytearray(template)
+        clone[0xC:0xC + 24] = TITLE_PANES[parent].encode().ljust(24, b"\0")
+        struct.pack_into("<ff", clone, 0x2C, *TITLE_POS)
+        struct.pack_into("<ff", clone, 0x44, TITLE_SCALE, TITLE_SCALE)
+        buf = struct.unpack_from("<H", clone, 0x54)[0]
+        text_at = struct.unpack_from("<I", clone, 0x64)[0]
+        text = (MINUS + " " + QUIT_TEXT["USen"]).encode("utf-16-le")[:buf - 2] + b"\0\0"
+        clone[text_at:text_at + buf] = text.ljust(buf, b"\0")
+        struct.pack_into("<H", clone, 0x56, len(text))
+        out[nxt:nxt] = b"pas1" + struct.pack("<I", 8) + clone + b"pae1" + struct.pack("<I", 8)
+    struct.pack_into("<I", out, 0xC, len(out))
+    struct.pack_into("<H", out, 0x10, struct.unpack_from("<H", d, 0x10)[0] + 3 * len(TITLE_PANES))
+    return bytes(out)
+
+
 # ---- MSBT -------------------------------------------------------------------------------------------------------
 
 def msbt_add(d, label, text):
@@ -335,8 +432,8 @@ def rstb_grow(d, growth):
 
 def write_zs(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    open(path, "wb").write(zstandard.ZstdCompressor(level=19).compress(data))
-    print("wrote", os.path.relpath(path, REPO))
+    open(path, "wb").write(zs(data))
+    print("wrote", path)
 
 
 def main():
@@ -347,17 +444,23 @@ def main():
     romfs, out = a.romfs, os.path.join(a.out, "romfs")
     growth = {}
 
-    def mod(name, member, edit, member_heap=0):
+    def mod(name, edits, member_heap=None):
+        """edits: {member: function(old bytes) -> new bytes}; member_heap: {member: bytes} for pack members, whose
+        own size-table entry also sizes what they are parsed into."""
         arc = unzs(os.path.join(romfs, name))
-        old = sarc_get(arc, member)
-        data = edit(old)
-        new = sarc_replace(arc, {member: data})
+        files = {}
+        for member, edit in edits.items():
+            old = sarc_get(arc, member)
+            files[member] = edit(old)
+            heap = (member_heap or {}).get(member, 0)
+            if heap:
+                growth[member] = len(files[member]) - len(old) + heap
+        new = sarc_replace(arc, files)
         growth[name[:-3]] = len(new) - len(arc)
-        if member_heap:  # a pack member is a resource of its own, whose entry also sizes what it is parsed into
-            growth[member] = len(data) - len(old) + member_heap
         write_zs(os.path.join(out, name), new)
 
-    mod("Layout/Pause.Nin_NX_NVN.blarc.zs", "blyt/Pause.bflyt", patch_pause_layout)
+    mod("Layout/Pause.Nin_NX_NVN.blarc.zs", {"blyt/Pause.bflyt": patch_pause_layout})
+    mod("Layout/Title.Nin_NX_NVN.blarc.zs", {"blyt/Title.bflyt": patch_title_layout})
 
     def add_button(data):
         version, screen = byml_read(data)
@@ -369,19 +472,25 @@ def main():
             "DecideInfoGenerateTable": {**exit_btn["DecideInfoGenerateTable"], "EnumValue": QUIT_ENUM}})
         return byml_write(version, screen)
 
-    # The pause screen's entry (19136 for a 4660-byte file) is its parsed tables too: room for one more button.
-    mod("Pack/Bootup.Nin_NX_NVN.pack.zs", "Gyml/UIExtraScreenParam/Pause.game__UIExtraScreenParam.bgyml", add_button,
-        member_heap=0x2000)
+    # The pause screen's entry (19136 for a 4660-byte file at 1.2.0) is its parsed tables too: room for one more button.
+    pause = "Gyml/UIExtraScreenParam/Pause.game__UIExtraScreenParam.bgyml"
+    mod("Pack/Bootup.Nin_NX_NVN.pack.zs", {pause: add_button}, member_heap={pause: 0x2000})
 
     for f in sorted(os.listdir(os.path.join(romfs, "Mals"))):
         lang = f.split(".")[0]
         if lang not in QUIT_TEXT:
             print("skipped", f, "(no translation)")
             continue
-        mod("Mals/" + f, "LayoutMsgRef/PauseRef.msbt",
-            lambda m: msbt_add(m, QUIT_PANE + "-T_BtnName", QUIT_TEXT[lang]))
+        button = lambda m, lang=lang: msbt_add(m, QUIT_PANE + "-T_BtnName", QUIT_TEXT[lang])
+        def title(m, lang=lang):
+            for pane in TITLE_PANES.values():
+                m = msbt_add(m, pane, MINUS + " " + QUIT_TEXT[lang])
+            return m
+        mod("Mals/" + f, {"LayoutMsgRef/PauseRef.msbt": button, "LayoutMsgRef/TitleRef.msbt": title})
 
-    name = "System/Resource/ResourceSizeTable.Product.120.rsizetable.zs"
+    tables = glob.glob(os.path.join(romfs, "System", "Resource", "ResourceSizeTable.Product.*.rsizetable.zs"))
+    assert len(tables) == 1, f"one resource size table expected, found {tables}"
+    name = "System/Resource/" + os.path.basename(tables[0])
     write_zs(os.path.join(out, name), rstb_grow(unzs(os.path.join(romfs, name)), growth))
 
 

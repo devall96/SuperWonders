@@ -104,6 +104,9 @@ uint64_t hle_address(const char* name);  // thunk address; unknown names get a l
 uint64_t hle_address_or(const char* name, HleFn fallback);  // unknown names get `fallback`
 const char* hle_current_name();  // inside an HLE function: the name its thunk was made for
 HleFn hle_lookup(const char* name);
+// Player 1's buttons (NpadButton bits) as the game last read them through hid: after the overlay and remapping took
+// what they use, so what the game itself sees. 0 before the first read.
+uint64_t hid_buttons();
 
 // Call guest code at `addr` on context c (args already in x0..).
 inline void guest_call(CPU& c, uint64_t addr) { call(c, addr); }
