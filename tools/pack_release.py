@@ -235,6 +235,11 @@ def privacy_check(folder):
             pat = re.escape(text.encode(enc))
             if name == "OneDrive":  # (not Windows' known-folder id FOLDERID_OneDrive, which every Windows program has)
                 pat = b"(?<!" + re.escape("FOLDERID_".encode(enc)) + b")" + pat
+            if name.startswith("home"):  # (not "Users\<name>": that one always follows a drive, C:\)
+                # Only where a path starts (after the start of the file, a NUL, a quote, a space...), never inside
+                # another path: build machines' "/opt/rh/devtoolset-10/root/usr/..." in manylinux wheels and LLVM.
+                c = b"[A-Za-z0-9_./\\\\-]"
+                pat = (b"(?<!" + c + b")" if enc == "utf-8" else b"(?<!" + c + b"\x00)") + pat
             pats.append((name, re.compile(pat, re.I)))
     problems = []
     for base, dirs, files in os.walk(folder):
