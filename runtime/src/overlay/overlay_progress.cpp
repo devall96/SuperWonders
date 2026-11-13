@@ -98,20 +98,7 @@ void draw_progress(float height) {
     dl->AddRect(p0, p1, ui::fade(th.accent, a * 0.55f), 14 * k, 0, 1.5f * k);
     dl->AddText(tf, tfs, {(p0.x + p1.x - ts.x) * 0.5f, p0.y + 40 * k}, ui::fade(th.accent, a), title);
     const ImVec2 ba(p0.x + 48 * k, p0.y + bar_y), bb(p1.x - 48 * k, p0.y + bar_y + 24 * k);
-    dl->AddRectFilled(ba, bb, ui::fade(IM_COL32(255, 255, 255, 25), a), 12 * k);
-    const float fx = ba.x + (bb.x - ba.x) * shown;
-    if (fx > ba.x + 1) {
-        dl->AddRectFilled(ba, {std::max(fx, ba.x + 24 * k), bb.y}, ui::fade(th.accent, a), 12 * k);
-        // a sheen sweeping along the filled part, once every 1.6 s
-        const float w = 120 * k, sx = ba.x + std::fmod(t / 1.6f, 1.0f) * (fx - ba.x + w) - w;
-        const float x0 = std::max(sx, ba.x + 4 * k), x1 = std::min(sx + w, fx - 4 * k);
-        if (x1 > x0) {
-            const ImU32 clear = ui::fade(IM_COL32(255, 248, 220, 0), a), lit = ui::fade(IM_COL32(255, 248, 220, 110), a);
-            const float xm = (x0 + x1) * 0.5f;
-            dl->AddRectFilledMultiColor({x0, ba.y + 4 * k}, {xm, bb.y - 4 * k}, clear, lit, lit, clear);
-            dl->AddRectFilledMultiColor({xm, ba.y + 4 * k}, {x1, bb.y - 4 * k}, lit, clear, clear, lit);
-        }
-    }
+    ui::progress_bar(dl, ba, bb, shown, a);
     char line[160];
     const int pct = int(shown * 100.0f + 0.5f);
     const double elapsed = since(g_started_ns);

@@ -146,10 +146,12 @@ void boot() {
     if (const char* t = std::getenv("NX_TRACE")) g_trace = *t == '1';
     if (plat::setting("trace") == "1") g_trace = true;
     memory_init();
-    kernel_init();
 #if NX_GAME_LIBRARY
-    launcher::run();  // the start screen, when the game isn't set up or --config (after the guest memory is reserved)
+    // The start screen, when the game isn't set up or with --config: after the guest memory is reserved (so nothing it
+    // allocates lands there), before the kernel and its watchdog start (the game hasn't, and isn't hung).
+    launcher::run();
 #endif
+    kernel_init();
     const ModuleInfo* mods[] = {&main_module(), &sdk_module()};
     load_modules(mods, 2, plat::data_root() + "/analysis");
 

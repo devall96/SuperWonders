@@ -52,7 +52,7 @@ std::string setting(const std::string& key);  // a player setting: config.txt (A
 // The system's folder picker, titled `title`, starting in `start` (may be ""). Returns at once; `done` gets the folder
 // chosen, or "" when the player cancelled, from another thread.
 void pick_folder(const std::string& title, const std::string& start, std::function<void(std::string)> done);
-void open_folder(const std::string& path);  // shows it in the system's file manager
+void open_folder(const std::string& path);  // shows it in the system's file manager (an http(s) address: the browser)
 std::vector<std::string> program_args();     // the command line, without the program's own path
 
 // ---- display, input, audio ----

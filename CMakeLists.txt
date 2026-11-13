@@ -122,6 +122,14 @@ else()
     set(NX_GAMELIB_FILE "lib${NX_GAME}_game.so")
 endif()
 
+if(NX_TESTS)
+    # SuperWonders Update's plain logic (launcher/update_core.c, update_crypto.c): versions, releases, file lists,
+    # paths, launcher installs
+    add_executable(update_core_test tests/update_core_test.c runtime/src/launcher/update_core.c
+                   runtime/src/launcher/update_crypto.c)
+    add_test(NAME update_core COMMAND update_core_test)
+endif()
+
 # Without the generated code (a checkout with no game data) only the tests above are built, and the program when it
 # loads the game code from a library.
 file(GLOB NX_GEN_PROBE "${NX_GEN_DIR}/main/*.cpp")
@@ -285,7 +293,8 @@ file(GLOB NX_GAME_SOURCES CONFIGURE_DEPENDS "${NX_GAME_DIR}/*.cpp")
 list(APPEND NX_RUNTIME_SOURCES ${NX_GAME_SOURCES} ${NX_SHADER_SOURCES} runtime/src/gamelib.cpp)
 if(NX_GAME_LIBRARY)
     # SuperWonders Launcher: the start screen before the game (setup, settings, mods, updates; launcher/launcher.h)
-    list(APPEND NX_RUNTIME_SOURCES runtime/src/launcher/launcher.cpp runtime/src/launcher/updates.cpp)
+    list(APPEND NX_RUNTIME_SOURCES runtime/src/launcher/launcher.cpp runtime/src/launcher/updates.cpp
+         runtime/src/launcher/update_core.c runtime/src/launcher/update_crypto.c)
 endif()
 # The release's version (VERSION): the launcher shows it, the updater compares it with the newest release's.
 file(STRINGS "${CMAKE_SOURCE_DIR}/VERSION" NX_VERSION LIMIT_COUNT 1)
@@ -377,7 +386,7 @@ else()
     if(MINGW)
         # LLVM-MinGW ships the XAudio2 2.9 import library under its SDK name. Its plain "xinput" is XInput 1.3 (the
         # DirectX 2010 redistributable, missing on a clean Windows); 1.4 ships with Windows 8 and later.
-        target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_MODULES} xinput1_4 xaudio2_9 ole32 psapi shell32 uuid)
+        target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_MODULES} xinput1_4 xaudio2_9 ole32 psapi shell32 uuid winhttp)
         if(NX_GAME_LIBRARY)
             # The C++ runtime shared with the game code library (one copy: LongJmp is thrown here and caught there),
             # so libc++.dll and libunwind.dll go next to the program. The UCRT stays a system DLL.
@@ -417,3 +426,9 @@ endif()
 target_include_directories(${NX_GAME} PRIVATE "${NX_SHADER_OUT}")
 target_compile_definitions(${NX_GAME} PRIVATE NX_GAME_NAME="${NX_GAME}" NX_GAMELIB_FILE="${NX_GAMELIB_FILE}"
                            NX_GAME_LIBRARY=$<BOOL:${NX_GAME_LIBRARY}> NX_VERSION_STRING="${NX_VERSION}")
+# SuperWonders Update (launcher/updates.cpp): with a release key's public half (tools/sign_update.py --public), only
+# signed releases are installed; without one, GitHub's SHA-256 of the archive is still required.
+set(SUPERWONDERS_UPDATE_PUBKEY "" CACHE STRING "Release signing key, public half (128 hex digits); empty: not required")
+if(SUPERWONDERS_UPDATE_PUBKEY)
+    target_compile_definitions(${NX_GAME} PRIVATE SUPERWONDERS_UPDATE_PUBKEY="${SUPERWONDERS_UPDATE_PUBKEY}")
+endif()

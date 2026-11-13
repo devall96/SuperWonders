@@ -264,6 +264,9 @@ void* create_window() {
             log_line(SDL_GetError());
             return;
         }
+        // RecompLauncher's Big Picture mode (RECOMPLAUNCHER_MODE=bigpicture) starts full screen
+        const char* rl_mode = std::getenv("RECOMPLAUNCHER_MODE");
+        if (rl_mode && std::strcmp(rl_mode, "bigpicture") == 0) full = true;
         if (setting("fullscreen").empty() ? full : setting("fullscreen") != "0") SDL_SetWindowFullscreen(g_window, true);
         int pw = 0, ph = 0;
         SDL_GetWindowSizeInPixels(g_window, &pw, &ph);
@@ -532,6 +535,10 @@ void pick_folder(const std::string& title, const std::string& start, std::functi
 }
 
 void open_folder(const std::string& path) {
+    if (path.rfind("http", 0) == 0) {  // (a web page)
+        SDL_OpenURL(path.c_str());
+        return;
+    }
     make_dirs(path);
     SDL_OpenURL(("file://" + path).c_str());
 }
@@ -545,7 +552,7 @@ std::vector<std::string> program_args() {
     for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) all.append(buf, n);
     std::fclose(f);
     for (size_t at = 0, first = 1; at < all.size(); first = 0) {
-        size_t end = all.find(' ', at);
+        size_t end = all.find('\0', at);
         if (end == std::string::npos) end = all.size();
         if (!first) out.push_back(all.substr(at, end - at));
         at = end + 1;

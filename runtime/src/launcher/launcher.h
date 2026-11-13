@@ -6,9 +6,9 @@
 //     update brought a new game-build kit). The player picks the folders of their own ExeFS and RomFS and presses
 //     Set up game files; tools/setup_game.py does the work (game-build/ in a release), with its progress on screen.
 //   - configuration (--config): PLAY, GAME FILES, SETTINGS (the overlay menu over the launcher), MODS, UPDATES, QUIT.
-// Once set up, a plain start goes straight into the game. Never shown with --play, NX_NO_LAUNCHER=1, NX_HEADLESS or a
-// scripted run (NX_INPUT_SCRIPT), nor when a launcher such as RecompLauncher starts the game to play
-// (launcher/managed.h): it ran the setup itself.
+// Once set up, a plain start goes straight into the game. Never shown with --play (what RecompLauncher's profile starts:
+// it ran the setup itself, recomplauncher.json), NX_NO_LAUNCHER=1, NX_HEADLESS or a scripted run (NX_INPUT_SCRIPT).
+// After an update whose game-build kit builds the game code differently, it builds it again by itself.
 #pragma once
 
 namespace nx::launcher {

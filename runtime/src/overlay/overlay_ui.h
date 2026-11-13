@@ -49,6 +49,11 @@ void notify(const char* text);
 bool notices_active();
 void draw_notices(float height);
 
+// ---- progress ----
+// A progress bar from a to b (its height is b.y - a.y), `frac` 0..1 filled in the accent colour, with round ends and a
+// soft sheen sweeping along the filled part every 1.6 s: the bar's full height, fading out before the round ends.
+void progress_bar(ImDrawList* dl, ImVec2 a, ImVec2 b, float frac, float alpha = 1.0f);
+
 // ---- controller hints ----
 // A button badge (a round chip with a short label, e.g. "A", "L", "+") at `pos`, `h` tall; returns its width.
 float badge(ImDrawList* dl, ImVec2 pos, float h, const char* label, float alpha = 1.0f);

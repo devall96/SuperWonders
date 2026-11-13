@@ -346,6 +346,7 @@ struct State {
     std::string picked_exefs, picked_romfs;  // from the folder picker's thread
     uint64_t shown_ns = 0;
     std::string note;  // a line under the status (an error of the folder picker, a finished setup...)
+    bool demo_progress = false;  // NX_LAUNCHER_TOUR's last step: the setup card, not running anything
 };
 State* g = nullptr;
 
@@ -415,7 +416,7 @@ void backdrop(ImDrawList* dl, ImVec2 ds) {
 // The setup's progress: a card with the gliding bar and its sheen (the compile screen's look), in `area`.
 void progress_card(ImDrawList* dl, ImVec2 p0, ImVec2 p1) {
     const ui::Theme& th = ui::theme();
-    const float k = g_k, t = float(ImGui::GetTime());
+    const float k = g_k;
     static float shown = 0;
     const float frac = g->job.progress;
     shown = g->job.running ? ui::approach(shown, frac, 5.0f) : frac;
@@ -433,19 +434,7 @@ void progress_card(ImDrawList* dl, ImVec2 p0, ImVec2 p1) {
     const ImVec2 ts = tf->CalcTextSizeA(tfs, FLT_MAX, 0, title);
     dl->AddText(tf, tfs, {(p0.x + p1.x - ts.x) * 0.5f, p0.y + 36 * k}, th.accent, title);
     const ImVec2 ba(p0.x + 48 * k, p0.y + 36 * k + ts.y + 30 * k), bb(p1.x - 48 * k, ba.y + 24 * k);
-    dl->AddRectFilled(ba, bb, IM_COL32(255, 255, 255, 25), 12 * k);
-    const float fx = ba.x + (bb.x - ba.x) * shown;
-    if (fx > ba.x + 1) {
-        dl->AddRectFilled(ba, {std::max(fx, ba.x + 24 * k), bb.y}, th.accent, 12 * k);
-        const float w = 120 * k, sx = ba.x + std::fmod(t / 1.6f, 1.0f) * (fx - ba.x + w) - w;
-        const float x0 = std::max(sx, ba.x + 4 * k), x1 = std::min(sx + w, fx - 4 * k);
-        if (x1 > x0) {
-            const ImU32 clear = IM_COL32(255, 248, 220, 0), lit = IM_COL32(255, 248, 220, 110);
-            const float xm = (x0 + x1) * 0.5f;
-            dl->AddRectFilledMultiColor({x0, ba.y + 4 * k}, {xm, bb.y - 4 * k}, clear, lit, lit, clear);
-            dl->AddRectFilledMultiColor({xm, ba.y + 4 * k}, {x1, bb.y - 4 * k}, lit, clear, clear, lit);
-        }
-    }
+    ui::progress_bar(dl, ba, bb, shown);
     char line[640];
     const double secs = double(plat::monotonic_ns() - g->job.started_ns) / 1e9;
     std::snprintf(line, sizeof line, "%s   %d%%   %d:%02d", what.c_str(), int(shown * 100 + 0.5f), int(secs) / 60,
@@ -609,7 +598,7 @@ void screen(float w, float h) {
     const float top = ImGui::GetCursorPosY() + 40 * k;
 
     // the pages: a column on the left, the highlight easing in under the selected one
-    const bool busy = g->job.running;
+    const bool busy = g->job.running || g->demo_progress;
     ImGui::SetCursorPos({margin, top});
     ImGui::BeginGroup();
     for (int i = 0; i < kPages; ++i) {
@@ -767,6 +756,11 @@ void run() {
         return e ? std::max(0, std::atoi(e)) : 0;
     }();
     if (const char* e = std::getenv("NX_LAUNCHER_SETUP"); e && *e == '1') start_setup();
+    // An update brought a kit that builds the game code differently, and the folders are known: build it again at
+    // once, as Savage Wind does after an update, instead of asking for the folders again.
+    else if (g->status.ready == Ready::Rebuild && folder_has(g->config.exefs, "main") &&
+             folder_has(g->config.romfs, "Shader"))
+        g->page = PageFiles, start_setup();
     uint64_t frames = 0;
     for (;;) {
         const uint64_t t0 = plat::monotonic_ns();
@@ -776,7 +770,14 @@ void run() {
             const int step = int(frames / uint64_t(tour));
             if (step < kPages - 1) g->page = step;  // (not Quit)
             if (step == kPages - 1 && !overlay::is_open()) g->page = PageSettings, overlay::toggle();
-            if (step >= kPages) plat::exit_process(0);
+            if (step == kPages) {  // the setup card at 62%, its sheen sweeping
+                if (overlay::is_open()) overlay::toggle();
+                g->page = PageFiles, g->demo_progress = true, g->job.progress = 0.62f;
+                if (!g->job.started_ns) g->job.started_ns = plat::monotonic_ns();
+                std::lock_guard lk(g->job.lock);
+                g->job.what = "Translating the shaders";
+            }
+            if (step > kPages) plat::exit_process(0);
         }
         if (!nvn::present_ui_frame()) plat::sleep_ns(16'000'000);
         frames++;

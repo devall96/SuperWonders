@@ -250,6 +250,42 @@ void draw_notices(float height) {
 
 // ---- controller hints ----
 
+void progress_bar(ImDrawList* dl, ImVec2 a, ImVec2 b, float frac, float alpha) {
+    const Theme& th = theme();
+    const float h = b.y - a.y, r = h * 0.5f;
+    dl->AddRectFilled(a, b, fade(IM_COL32(255, 255, 255, 25), alpha), r);
+    float fx = a.x + (b.x - a.x) * std::clamp(frac, 0.0f, 1.0f);
+    if (fx <= a.x + 1) return;
+    fx = std::max(fx, a.x + h);  // (at least its two round ends)
+    dl->AddRectFilled(a, {fx, b.y}, fade(th.accent, alpha), r);
+    // The sheen: a band a quarter of the filled part wide (at least 4 bar heights), the bar's full height. Its
+    // brightness is worked out per slice, so it is soft in the middle, clear at its edges, and fades out over the round
+    // ends instead of showing a square edge there.
+    const float lo = a.x + r * 0.5f, hi = fx - r * 0.5f;
+    if (hi - lo < 4) return;
+    const float w = std::max(4 * h, (fx - a.x) * 0.25f);
+    const float t = float(ImGui::GetTime());
+    const float centre = lo - w * 0.5f + std::fmod(t / 1.6f, 1.0f) * (hi - lo + w);
+    auto light = [&](float x) {
+        const float band = std::max(0.0f, 1.0f - std::fabs(x - centre) / (w * 0.5f));
+        const float ends = std::clamp(std::min(x - lo, hi - x) / r, 0.0f, 1.0f);
+        return smoothstep(band) * smoothstep(ends);
+    };
+    const float x0 = std::max(lo, centre - w * 0.5f), x1 = std::min(hi, centre + w * 0.5f);
+    if (x1 <= x0) return;
+    constexpr int kSlices = 16;
+    const ImU32 lit = IM_COL32(255, 248, 220, 120);
+    for (int i = 0; i < kSlices; ++i) {
+        const float sa = x0 + (x1 - x0) * float(i) / kSlices, sb = x0 + (x1 - x0) * float(i + 1) / kSlices;
+        const ImU32 ca = fade(lit, alpha * light(sa)), cb = fade(lit, alpha * light(sb));
+        // (full height inside the straight part; over the round ends the fade has it near clear already)
+        const float inset_a = std::max(0.0f, r - std::min(sa - a.x, fx - sa)) * 0.9f;
+        const float inset_b = std::max(0.0f, r - std::min(sb - a.x, fx - sb)) * 0.9f;
+        const float inset = std::max(inset_a, inset_b);
+        dl->AddRectFilledMultiColor({sa, a.y + inset}, {sb, b.y - inset}, ca, cb, cb, ca);
+    }
+}
+
 float badge(ImDrawList* dl, ImVec2 pos, float h, const char* label, float alpha) {
     ImFont* f = body();
     const float fs = h * 0.62f;

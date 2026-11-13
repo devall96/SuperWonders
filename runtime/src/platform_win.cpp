@@ -809,7 +809,11 @@ static void window_thread(std::atomic<bool>* ready) {
     g_window = CreateWindowW(wc.lpszClassName, (widen(nx::game::kInfo.title) + L" (Switch recomp)  -  F11: fullscreen").c_str(), style,
                              std::max(0, x), std::max(0, y), w, h, nullptr, nullptr, wc.hInstance, nullptr);
     const char* fullscreen_env = std::getenv("NX_FULLSCREEN");
-    if (!headless() && (g_pc_settings.fullscreen || (fullscreen_env && *fullscreen_env == '1'))) toggle_fullscreen(g_window);
+    // RecompLauncher's Big Picture mode (RECOMPLAUNCHER_MODE=bigpicture: a controller on the couch) starts full screen
+    const char* rl_mode = std::getenv("RECOMPLAUNCHER_MODE");
+    const bool big_picture = rl_mode && std::strcmp(rl_mode, "bigpicture") == 0;
+    if (!headless() && (g_pc_settings.fullscreen || big_picture || (fullscreen_env && *fullscreen_env == '1')))
+        toggle_fullscreen(g_window);
     RECT client{};
     GetClientRect(g_window, &client);
     if (!g_pc_settings.width) g_pc_settings.width = client.right - client.left;
@@ -1266,7 +1270,7 @@ namespace nx::plat {
 
 static std::wstring utf16(const std::string& s) {
     int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    std::wstring w(size_t(std::max(1, n)) - 1, L' ');
+    std::wstring w(size_t(std::max(1, n)) - 1, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
     return w;
 }
@@ -1290,7 +1294,7 @@ void pick_folder(const std::string& title, const std::string& start, std::functi
                     PWSTR path = nullptr;
                     if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
                         int n = WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
-                        out.assign(size_t(std::max(1, n)) - 1, ' ');
+                        out.assign(size_t(std::max(1, n)) - 1, '\0');
                         WideCharToMultiByte(CP_UTF8, 0, path, -1, out.data(), n, nullptr, nullptr);
                         CoTaskMemFree(path);
                     }
@@ -1305,7 +1309,7 @@ void pick_folder(const std::string& title, const std::string& start, std::functi
 }
 
 void open_folder(const std::string& path) {
-    make_dirs(path);
+    if (path.rfind("http", 0) != 0) make_dirs(path);  // (or a web page)
     ShellExecuteW(nullptr, L"open", utf16(path).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
@@ -1315,7 +1319,7 @@ std::vector<std::string> program_args() {
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &n);
     for (int i = 1; argv && i < n; i++) {
         int len = WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, nullptr, 0, nullptr, nullptr);
-        std::string a(size_t(std::max(1, len)) - 1, ' ');
+        std::string a(size_t(std::max(1, len)) - 1, '\0');
         WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, a.data(), len, nullptr, nullptr);
         out.push_back(a);
     }
