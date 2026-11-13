@@ -394,6 +394,9 @@ bool sha256_hex(const fs::path& p, char out[65]) {
 
 bool fail(const std::string& why) {
     set(St::Failed, why);
+    // (nothing was swapped yet when this is called before the install: the download and what it unpacked go)
+    std::error_code ec;
+    if (!fs::exists(journal_path(), ec)) fs::remove_all(work(), ec);
     return false;
 }
 
@@ -502,7 +505,7 @@ bool apply_now() {
     if (!ok) {
         journal.close();
         undo(done);
-        fs::remove(journal_path(), ec);
+        fs::remove_all(work(), ec);
         return false;  // (fail() set the message; the previous version is back)
     }
     journal << "done\n";
@@ -559,6 +562,11 @@ void updates_init(bool config_mode) {
     const std::string test = env("SUPERWONDERS_UPDATE_TEST");
     if (test == "apply") start(true);
     else if (test == "check" || config_mode) start(false);  // (the configuration screen checks in the background)
+}
+
+bool updates_busy() {
+    std::lock_guard lk(g.lock);
+    return g.st == St::Checking || g.st == St::Applying || g.st == St::Restarting;
 }
 
 void page_updates(float k) {

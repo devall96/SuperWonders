@@ -355,18 +355,27 @@ void refresh_status() {
     g->mods = list_mods();
 }
 
-// A folder for a row's value: its last parts, so it fits beside the label ("…/wonder/exefs").
-std::string short_path(const std::string& p, size_t max = 34) {
-    if (p.size() <= max) return p;
-    std::string s = p;
+// A folder for a row's value, fitted to the room the row leaves beside its label (in pixels, at the current font and
+// scale): the whole path when it fits, else its last parts after "...", else the end of its last part. Measured, so
+// a narrow window, a large display scale or a long path can't make the value run over the label.
+std::string fit_path(const std::string& path, const char* label) {
+    std::string s = path;
     for (char& c : s) c = c == '\\' ? '/' : c;
-    size_t at = s.size();
-    for (int parts = 0; parts < 3; ++parts) {
-        size_t slash = s.rfind('/', at - 1);
-        if (slash == std::string::npos || s.size() - slash > max) break;
-        at = slash;
+    std::string up = label;
+    for (char& c : up) c = char(std::toupper(static_cast<unsigned char>(c)));
+    const float room = ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(up.c_str()).x -
+                       4 * ImGui::GetStyle().FramePadding.x - 3 * ImGui::GetFontSize();  // (padding, the gap)
+    auto fits = [&](const std::string& t) { return ImGui::CalcTextSize(t.c_str()).x <= room; };
+    if (fits(s)) return s;
+    for (size_t at = s.find('/'); at != std::string::npos; at = s.find('/', at + 1)) {
+        const std::string t = "..." + s.substr(at);
+        if (fits(t)) return t;
     }
-    return "..." + s.substr(at);
+    for (size_t cut = 1; cut < s.size(); ++cut) {  // not even the last part fits: its end
+        const std::string t = "..." + s.substr(cut);
+        if (fits(t)) return t;
+    }
+    return "...";
 }
 
 bool folder_has(const std::string& dir, const char* name) {
@@ -469,7 +478,7 @@ void page_play() {
 void page_files() {
     rows::begin("##files", ImGui::GetContentRegionAvail().y);
     rows::section("Your game files");
-    const std::string exefs = g->config.exefs.empty() ? "Choose..." : short_path(g->config.exefs);
+    const std::string exefs = g->config.exefs.empty() ? "Choose..." : fit_path(g->config.exefs, "ExeFS folder");
     const std::string exefs_desc =
         "The ExeFS folder of your own copy of the game (version 1.0.0). It holds main and sdk." +
         (g->config.exefs.empty() ? std::string() : "\n\nNow: " + g->config.exefs);
@@ -478,7 +487,7 @@ void page_files() {
             std::lock_guard lk(g->pick_lock);
             g->picked_exefs = p;
         });
-    const std::string romfs = g->config.romfs.empty() ? "Choose..." : short_path(g->config.romfs);
+    const std::string romfs = g->config.romfs.empty() ? "Choose..." : fit_path(g->config.romfs, "RomFS folder");
     const std::string romfs_desc = "The RomFS folder of your own copy of the game." +
                                    (g->config.romfs.empty() ? std::string() : "\n\nNow: " + g->config.romfs);
     if (rows::action("RomFS folder", romfs.c_str(), romfs_desc.c_str(), true))
@@ -777,7 +786,7 @@ void run() {
                 std::lock_guard lk(g->job.lock);
                 g->job.what = "Translating the shaders";
             }
-            if (step > kPages) plat::exit_process(0);
+            if (step > kPages && !updates_busy()) plat::exit_process(0);  // (an update finishes first)
         }
         if (!nvn::present_ui_frame()) plat::sleep_ns(16'000'000);
         frames++;
