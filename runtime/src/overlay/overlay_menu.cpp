@@ -336,7 +336,11 @@ void draw_menu(MenuContext& c) {
     // Tabs follow the keyboard / controller focus: moving onto a tab with the arrows or the D-pad shows it (next
     // frame), with no Enter or A needed. The mouse still selects by clicking. Only a change of focus moves the tab: L / R
     // select a tab without moving the focus, which must not pull it back.
-    static int follow = -1, focused_before = -1, shown_tab = -1;
+    static int follow = -1, focused_before = -1, shown_tab = -1, hold_follow = 0;
+    // L / R: the controller's cursor goes to the new page's first row, and following the focus pauses a few frames.
+    // Otherwise the cursor, left on a row of the page that went away, fell back onto the first tab and the
+    // tabs-follow-focus rule switched straight back (seen as "tab 1, tab 0" in the logs, before this change too).
+    if (c.tab_request >= 0 && c.tab_request != shown_tab) rows::focus_first(), hold_follow = 4;
     static float page_a = 1, page_dir = 0, line_x0 = -1, line_x1 = -1;
     int follow_next = -1, focused = -1;
     ImVec2 tab_min[kTabs], tab_max[kTabs];
@@ -356,7 +360,7 @@ void draw_menu(MenuContext& c) {
             const bool shown = ImGui::BeginTabItem(label, nullptr, tf);
             tab_min[t] = ImGui::GetItemRectMin(), tab_max[t] = ImGui::GetItemRectMax();
             if (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible) focused = t;
-            if (!shown && focused == t && focused_before != t) follow_next = t;
+            if (!shown && focused == t && focused_before != t && hold_follow == 0) follow_next = t;
             if (shown && c.appearing) ImGui::SetItemDefaultFocus();  // navigation starts on the open tab
             if (!shown) continue;
             current = t;
@@ -398,6 +402,7 @@ void draw_menu(MenuContext& c) {
     }
     follow = follow_next;
     focused_before = focused;
+    if (hold_follow > 0) hold_follow--;
     c.tab_request = current;  // out: the tab shown, for the shoulder buttons
 
     // the footer: what the buttons do, as Savage Wind's start screen shows them (badges)
