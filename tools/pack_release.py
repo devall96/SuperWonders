@@ -216,10 +216,24 @@ GAME_FILE = re.compile(r"(^|/)(main|sdk|main\.npdm|rtld)$|\.(nso|nro|nca|nsp|xci
                        r"(^|/)(romfs|exefs)(/|$)", re.I)
 
 
+# An e-mail address. Looked for in SuperWonders' own files only: the third-party parts of a release (Python's
+# standard library, the compiler's headers, the .NET runtime) are full of their authors' public addresses.
+# (With a real top-level domain at the end: shader code in the program has names such as "X@entryPointOutput.pos".)
+TLDS = (b"com|org|net|edu|gov|mil|int|io|me|dev|app|co|info|biz|xyz|tech|online|email|mail|cloud|uk|de|fr|it|es|nl|be|"
+        b"ch|at|se|no|fi|dk|pl|cz|pt|ie|ru|ua|jp|cn|kr|tw|hk|in|au|nz|ca|us|br|mx|ar|cl|eu|is|gg|tv|me|ai|so|to|ly|im")
+EMAIL = re.compile(rb"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.(?:" + TLDS +
+                   rb")(?![A-Za-z0-9])", re.I)
+THIRD_PARTY = ("game-build/python/", "game-build/toolchain/", "game-build/translator/")
+# Personal strings to refuse anywhere in a release, one per line ('#' comments): the packer's own names, mail,
+# folders. Local and untracked (.gitignore), so nothing personal is ever written in the code.
+EXTRA = os.path.join(REPO, "tools", "privacy-extra.txt")
+
+
 def privacy_check(folder):
     """Fails the pack if anything in `folder` names the machine that packed it or holds the game. Looks at every
     file's name and contents (UTF-8 and UTF-16, as programs keep paths in either): this PC's home folder and user
-    name, the private game data folder, OneDrive, an e-mail domain, and files that are, or come from, the game."""
+    name, the private game data folder, OneDrive, an e-mail address (in SuperWonders' own files), the strings in
+    tools/privacy-extra.txt, and files that are, or come from, the game."""
     home = os.path.expanduser("~")
     user = os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser()
     needles = {  # name -> the text
@@ -229,6 +243,12 @@ def privacy_check(folder):
         "SuperWonders-private": "SuperWonders-private", "OneDrive": "OneDrive",
         "user folder": f"Users\\{user}", "user folder (/)": f"Users/{user}", "home (Linux)": f"/home/{user}/",
     }
+    if os.path.isfile(EXTRA):
+        with open(EXTRA, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    needles[f"a string from {os.path.basename(EXTRA)}"  + f" #{len(needles)}"] = line
     pats = []
     for name, text in needles.items():
         for enc in ("utf-8", "utf-16-le"):
@@ -253,6 +273,10 @@ def privacy_check(folder):
                 continue
             with open(p, "rb") as fh:
                 data = fh.read()
+            if not rel.startswith(THIRD_PARTY):
+                m = EMAIL.search(data) or EMAIL.search(data.replace(b"\x00", b""))
+                if m:
+                    problems.append(f"{rel}: contains an e-mail address ({m.group()!r})")
             for name, pat in pats:
                 if name == "OneDrive" and ONEDRIVE_OK.search(rel):
                     continue
@@ -312,7 +336,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--version", default=open(os.path.join(REPO, "VERSION")).read().strip())
     ap.add_argument("--repo", default="", help="the GitHub repository SuperWonders Update checks (owner/name)")
-    ap.add_argument("--sign", help="an ECDSA P-256 key (PEM): writes <archive>.sig (tools/sign_update.py)")
+    ap.add_argument("--sign", help="the repository owner's release key (PEM): writes <archive>.sig (docs/RELEASES.md)")
+    ap.add_argument("--pubkey", default="", help="the release key's public half (tools/sign_update.py --public), for "
+                                                  "update.ini: then only releases signed with it are installed")
     ap.add_argument("--toolchain", help="llvm-mingw (Windows)")
     ap.add_argument("--python", help="a CPython install (Windows)")
     ap.add_argument("--site-packages", help=f"where {', '.join(PY_MODULES)} are (default: this Python's)")
@@ -341,7 +367,10 @@ def main():
         f.write(a.version + "\n")
     with open(os.path.join(folder, "update.ini"), "w", newline="\n") as f:
         f.write("# SuperWonders Update checks this GitHub repository's releases. Empty: no checks.\n"
-                f"repo={a.repo}\n")
+                f"repo={a.repo}\n"
+                "# The repository owner's release key, public half (docs/RELEASES.md). Set: only releases signed with\n"
+                "# it are installed. Empty: GitHub's SHA-256 of the file alone is checked.\n"
+                f"pubkey={a.pubkey}\n")
     with open(os.path.join(folder, "recomplauncher.json"), "w", newline="\n") as f:
         json.dump(recomplauncher_json(a.version), f, indent=2)
     kit_id = pack_kit(os.path.join(folder, "game-build"), a)

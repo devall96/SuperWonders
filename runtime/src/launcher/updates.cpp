@@ -10,7 +10,10 @@
 //   - an AppImage is replaced as one file, in place (launcher/update_appimage.c, Savage Wind's): downloaded next to
 //     it, checked, started once (--update-health), swapped in, the old one kept as <file>.old until the next start.
 //   - downloads it and checks it against the SHA-256 GitHub publishes for it (required), and against its .sig when a
-//     key is built in (SUPERWONDERS_UPDATE_PUBKEY, ECDSA P-256 X then Y in hex: tools/sign_update.py's --public)
+//     release key is set: the repository owner's public key, in update.ini (pubkey=) or built in
+//     (SUPERWONDERS_UPDATE_PUBKEY). ECDSA P-256, X then Y in hex: tools/sign_update.py --public. With a key, a release
+//     without a .sig, or with one that doesn't check out, is never installed; without one, the SHA-256 alone.
+//     docs/RELEASES.md says how an owner makes the key and signs releases.
 //   - unpacks it to update/staging with the system's tar, and checks every file against the release's file list
 //     (superwonders-manifest.txt: size, SHA-256, a safe relative path)
 //   - moves the old files to update/backup and the new ones into place, keeping a journal: if anything fails, or the
@@ -84,11 +87,7 @@ const char* suffix() {
     return appimage() ? "-Linux-x64.AppImage" : "-Linux-x64.tar.gz";
 #endif
 }
-#ifdef SUPERWONDERS_UPDATE_PUBKEY
-constexpr const char* kPubkey = SUPERWONDERS_UPDATE_PUBKEY;
-#else
-constexpr const char* kPubkey = nullptr;
-#endif
+
 constexpr const char* kManifest = "superwonders-manifest.txt";
 
 fs::path u8(const std::string& s) { return fs::path(reinterpret_cast<const char8_t*>(s.c_str())); }
@@ -130,6 +129,30 @@ std::string repo() {
         if (line.rfind("repo=", 0) == 0) r = line.substr(5);
     }
     return r;
+}
+
+// The repository owner's release key: built in (SUPERWONDERS_UPDATE_PUBKEY), else update.ini's pubkey=. "" when there
+// is none (the SHA-256 alone is checked). *bad: update.ini names one that isn't 128 hex digits, and then nothing is
+// installed rather than falling back to the checksum alone.
+std::string pubkey(bool* bad = nullptr) {
+    if (bad) *bad = false;
+#ifdef SUPERWONDERS_UPDATE_PUBKEY
+    return SUPERWONDERS_UPDATE_PUBKEY;
+#else
+    std::string k;
+    std::ifstream f(prog() / "update.ini");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("pubkey=", 0) == 0) k = line.substr(7);
+    }
+    uint8_t raw[64];
+    if (!k.empty() && !uc_hex_decode(k.c_str(), raw, 64)) {
+        if (bad) *bad = true;
+        return {};
+    }
+    return k;
+#endif
 }
 
 bool loopback(const std::string& url) {
@@ -396,11 +419,9 @@ void check_now() {
     if (!http_get(url, &json, nullptr, nullptr, 0, why)) return set(St::Failed, "couldn't check for updates: " + why);
     UcRelease rel{};
     int skipped = 0;
-#ifdef SUPERWONDERS_UPDATE_PUBKEY
-    const bool need_sig = true;
-#else
-    const bool need_sig = false;
-#endif
+    bool bad_key = false;
+    const bool need_sig = !pubkey(&bad_key).empty();
+    if (bad_key) return set(St::Failed, "update.ini's pubkey isn't a release key (128 hex digits): no updates until it's fixed");
     switch (uc_pick_release(json.c_str(), current_version().c_str(), suffix(), need_sig, &rel, &skipped)) {
         case UC_PICK_BAD_JSON: return set(St::Failed, "the answer wasn't GitHub's list of releases");
         case UC_PICK_CURRENT:
@@ -451,7 +472,8 @@ bool apply_now() {
             while (!done) g.progress = progress, plat::sleep_ns(100'000'000);
         });
         UpdateProblem p{};
-        const bool ok = appimage_install(str(work()).c_str(), &rel, kPubkey, &progress, &p);
+        const std::string key = pubkey();
+        const bool ok = appimage_install(str(work()).c_str(), &rel, key.empty() ? nullptr : key.c_str(), &progress, &p);
         done = true;
         follow.join();
         if (!ok) return fail(std::string(p.title) + ": " + p.what);
@@ -465,7 +487,7 @@ bool apply_now() {
     fs::create_directories(work() / "staging", ec);
     const fs::path archive = work() / rel.zip_name;
 
-    // 1. download, check the checksum (and the signature, when a key is built in)
+    // 1. download, check the checksum (and the signature, when there is a release key)
     g.step = "Downloading", g.progress = 0;
     set(St::Applying, std::string("downloading ") + rel.zip_name);
     if (!allowed_url(rel.zip_url)) return fail("the release's file isn't on GitHub: " + std::string(rel.zip_url));
@@ -475,8 +497,7 @@ bool apply_now() {
     char hex[65];
     if (!sha256_hex(archive, hex) || std::strcmp(hex, rel.digest) != 0)
         return fail("the download doesn't match its checksum: nothing was changed");
-#ifdef SUPERWONDERS_UPDATE_PUBKEY
-    {
+    if (const std::string key = pubkey(); !key.empty()) {
         std::string sig;
         const fs::path sig_file = work() / "release.sig";
         uint8_t pub[64], s[64], h[32];
@@ -484,11 +505,10 @@ bool apply_now() {
             !read_text(sig_file, sig))
             return fail("couldn't download the release's signature");
         while (!sig.empty() && (sig.back() == '\n' || sig.back() == '\r')) sig.pop_back();
-        if (!uc_hex_decode(SUPERWONDERS_UPDATE_PUBKEY, pub, 64) || !uc_hex_decode(sig.c_str(), s, 64) ||
+        if (!uc_hex_decode(key.c_str(), pub, 64) || !uc_hex_decode(sig.c_str(), s, 64) ||
             !uc_sha256_file(str(archive).c_str(), h) || !uc_p256_verify(h, s, pub))
             return fail("the release's signature doesn't check out: nothing was changed");
     }
-#endif
 
     // 2. unpack, and check every file against the release's own list
     g.step = "Unpacking";

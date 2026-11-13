@@ -27,3 +27,6 @@ Start WonderBuilder.cmd
 # Local tooling state and run logs.
 nx.log
 *.log
+
+# Personal strings the release privacy check refuses (tools/pack_release.py): local only, never committed.
+tools/privacy-extra.txt
