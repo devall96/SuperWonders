@@ -1068,8 +1068,10 @@ Voice g_callback;
 
 bool audio_open(AudioDone done) {
     g_done = done;
-    // Headless test runs (and NX_MUTE=1) are silent: no device, the callers pace themselves with a timer.
-    if (headless() || std::getenv("NX_MUTE")) return false;
+    // Headless test runs (and NX_MUTE set to anything but 0 or empty) are silent: no device, the callers pace
+    // themselves with a timer.
+    const char* mute = std::getenv("NX_MUTE");
+    if (headless() || (mute && *mute && std::strcmp(mute, "0") != 0)) return false;
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(XAudio2Create(&g_xa, 0, XAUDIO2_DEFAULT_PROCESSOR))) return false;
     IXAudio2MasteringVoice* master = nullptr;
