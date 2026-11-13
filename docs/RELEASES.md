@@ -26,7 +26,8 @@ player's files are in the data folder: `data/` next to the program on Windows (a
 
 **Mods** go in its `mods/` folder, one folder each, holding a `romfs` folder (`mods/<name>/romfs/`, or the layout
 Switch mods come in, `mods/<name>/contents/<title id>/romfs/`). Their files go over the game's at start: in name order,
-the first mod with a file wins, and a folder whose name starts with `-` is off (`runtime/src/hle_fs.cpp`).
+the first mod with a file wins, and a folder whose name starts with `-` is off (`runtime/src/hle_fs.cpp`). The launcher's
+Mods page lists them, turns each on or off, and opens the folder.
 
 ## What SuperWonders Update checks
 

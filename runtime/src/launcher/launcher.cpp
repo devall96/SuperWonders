@@ -304,14 +304,41 @@ private:
     }
 };
 
+// ---- mods: <data root>/mods/<name>/ (hle_fs.cpp mod_roots: name order, a leading '-' turns one off) ----
+struct Mod {
+    std::string name;  // without the '-'
+    bool on;
+};
+
+std::vector<Mod> list_mods() {
+    std::vector<Mod> out;
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(u8(plat::data_root()) / "mods", ec)) {
+        if (!e.is_directory()) continue;
+        std::string n = str(e.path().filename());
+        bool on = n.rfind('-', 0) != 0;
+        out.push_back({on ? n : n.substr(1), on});
+    }
+    std::sort(out.begin(), out.end(), [](const Mod& a, const Mod& b) { return a.name < b.name; });
+    return out;
+}
+
+bool set_mod(const Mod& m, bool on) {
+    const fs::path dir = u8(plat::data_root()) / "mods";
+    std::error_code ec;
+    fs::rename(dir / u8(m.on ? m.name : "-" + m.name), dir / u8(on ? m.name : "-" + m.name), ec);
+    return !ec;
+}
+
 // ---- the launcher's state (the screen runs on the presenting thread, run() on the game's) ----
-enum Page { PagePlay, PageFiles, PageSettings, PageUpdates, PageQuit, kPages };
-const char* const kPageNames[kPages] = {"Play", "Game files", "Settings", "Updates", "Quit"};
+enum Page { PagePlay, PageFiles, PageSettings, PageMods, PageUpdates, PageQuit, kPages };
+const char* const kPageNames[kPages] = {"Play", "Game files", "Settings", "Mods", "Updates", "Quit"};
 
 struct State {
     Kit kit;
     Config config;
     Status status;
+    std::vector<Mod> mods;
     std::atomic<int> page{PagePlay};
     std::atomic<bool> play{false}, quit{false};
     bool config_mode = false;
@@ -338,6 +365,7 @@ State* g = nullptr;
 
 void refresh_status() {
     g->status = check_status(g->kit);
+    g->mods = list_mods();
 }
 
 // A folder for a row's value, fitted to the room the row leaves beside its label (in pixels, at the current font and
@@ -610,6 +638,28 @@ void page_settings() {
     rows::end();
 }
 
+void page_mods() {
+    rows::begin("##mods", ImGui::GetContentRegionAvail().y);
+    rows::section("Mods");
+    if (g->mods.empty())
+        rows::action("No mods yet", "", "Put each mod in a folder of its own in the mods folder. A mod holds a romfs "
+                                        "folder (romfs/, or contents/<title id>/romfs/ as Switch mods come).",
+                     true);
+    for (Mod& m : g->mods) {
+        bool on = m.on;
+        if (rows::toggle(m.name.c_str(), &on, true,
+                         "Its files go over the game's. Mods load in name order; the first with a file wins. "
+                         "Applies the next time the game starts.") &&
+            set_mod(m, on))
+            m.on = on;
+    }
+    rows::section("Folder");
+    if (rows::action("Open the mods folder", "", "Add, remove or rename mods there.", true))
+        plat::open_folder(plat::data_root() + "/mods");
+    if (rows::action("Refresh", "", "Read the mods folder again.", true)) g->mods = list_mods();
+    rows::end();
+}
+
 void page_quit() {
     rows::begin("##quit", ImGui::GetContentRegionAvail().y);
     rows::section("Quit");
@@ -786,6 +836,7 @@ void screen(float w, float h) {
             case PagePlay: page_play(); break;
             case PageFiles: page_files(); break;
             case PageSettings: page_settings(); break;
+            case PageMods: page_mods(); break;
             case PageUpdates: page_updates(g_k); break;
             default: page_quit(); break;
         }
