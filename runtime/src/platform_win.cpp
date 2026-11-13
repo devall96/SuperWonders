@@ -709,7 +709,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
             metrics_reposition();
             break;
         case WM_PAINT: {
-            if (!g_shader_progress_visible.load(std::memory_order_acquire))
+            if (!g_shader_progress_visible.load(std::memory_order_acquire) || overlay::enabled())
                 return DefWindowProcW(h, msg, w, l);
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(h, &ps);
@@ -847,7 +847,9 @@ void shader_compile_progress(uint64_t compiled, uint64_t total, bool visible) {
     g_shader_compiled.store(compiled, std::memory_order_relaxed);
     g_shader_total.store(total, std::memory_order_relaxed);
     g_shader_progress_visible.store(visible, std::memory_order_release);
-    if (g_window) InvalidateRect(g_window, nullptr, TRUE);
+    // With the ImGui overlay the compile screen is presented through Vulkan (overlay_progress.cpp); painting the window
+    // too would flicker over it.
+    if (g_window && !overlay::enabled()) InvalidateRect(g_window, nullptr, TRUE);
 }
 
 void overlay_game_interval(int interval) {

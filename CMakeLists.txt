@@ -212,6 +212,9 @@ set(NX_RUNTIME_SOURCES
     runtime/src/overlay/settings.cpp
     runtime/src/overlay/overlay.cpp
     runtime/src/overlay/overlay_menu.cpp
+    runtime/src/overlay/overlay_progress.cpp
+    runtime/src/overlay/overlay_ui.cpp
+    runtime/src/overlay/option_rows.cpp
     runtime/src/overlay/overlay_vk.cpp
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_draw.cpp

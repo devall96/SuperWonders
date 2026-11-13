@@ -326,7 +326,7 @@ void prepare_shader_catalog() {
     if (marker_exists(marker)) return;
 
     const uint64_t total = programs.size();
-    plat::shader_compile_progress(0, total, true);
+    prep_progress(0, total, true, 0);
     log("nvn/vk: preparing %llu shader programs before the first frame", (unsigned long long)total);
     pipeline_cache();
 
@@ -362,9 +362,10 @@ void prepare_shader_catalog() {
     const uint64_t prep_start = plat::monotonic_ns();
     uint64_t saved_at = prep_start;
     const auto flush = [&] {
-        run_parallel(batch);
+        // the compile screen keeps moving while the workers compile (a frame every 33 ms at most)
+        run_parallel(batch, [&] { prep_progress(compiled.load(), total, true, 0); });
         batch.clear();
-        plat::shader_compile_progress(compiled.load(), total, true);
+        prep_progress(compiled.load(), total, true, 0);
         if (plat::monotonic_ns() - saved_at >= save_ns) pipeline_cache_save(), saved_at = plat::monotonic_ns();
     };
 
@@ -435,7 +436,7 @@ void prepare_shader_catalog() {
     }
     pipeline_cache_save();
     write_marker(marker, fingerprint, attempted, compiled.load());
-    plat::shader_compile_progress(compiled.load(), total, false);
+    prep_progress(compiled.load(), total, false, 0);
     log("nvn/vk: startup shader preparation finished: %llu/%llu programs compiled, %llu failed, in %.1f s",
         (unsigned long long)compiled.load(), (unsigned long long)total, (unsigned long long)failed.load(),
         double(plat::monotonic_ns() - prep_start) / 1e9);

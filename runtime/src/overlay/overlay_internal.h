@@ -24,8 +24,10 @@ struct MenuContext {
     int& capture_action;       // keyboard binding being captured (-1: none)
     int tab_request;           // -1, or the tab to select (shoulder buttons)
     bool& open;
-    float scale;
+    float scale;     // the image height / 720
     bool appearing;  // first frame after opening
+    float height;    // the image height in pixels (the style is sized from it)
+    float reveal;    // 0..1: the open / close fade
 };
 void draw_menu(MenuContext& c);
 int menu_tab_count();
@@ -33,5 +35,9 @@ const char* const* menu_language_names();  // 4 entries
 
 // overlay.cpp: apply and persist after a change made in the menu
 void settings_changed(bool persist);
+
+// overlay_progress.cpp: the startup shader-compile screen (shader_progress in overlay.h feeds it)
+bool progress_wanted();
+void draw_progress(float height);
 
 }  // namespace nx::overlay
