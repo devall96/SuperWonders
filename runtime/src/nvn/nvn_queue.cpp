@@ -347,7 +347,14 @@ void WindowSetPresentInterval(CPU& c) {
 // display's blank where it can be), so frames reach the display on its refresh, not on a clock drifting against it.
 // A late frame does not wait for the next vsync. NX_NO_FRAME_LIMIT=1, or fast-forward held: unpaced (the game's
 // logic steps once per frame, so it runs as fast as the machine renders).
+std::atomic<int> g_frame_cap{60};  // set_frame_cap: 60, or 30 (at least two vsyncs per present)
+
 void pace_present(int interval) {
+    static const int forced_cap = [] {
+        const char* e = std::getenv("NX_FPS_CAP");
+        return e ? (std::atoi(e) == 30 ? 30 : 60) : 0;
+    }();
+    if ((forced_cap ? forced_cap : g_frame_cap.load(std::memory_order_relaxed)) == 30 && interval < 2) interval = 2;
     static const bool off = std::getenv("NX_NO_FRAME_LIMIT") != nullptr;
     static uint64_t next = 0;
     if (off || interval <= 0 || plat::fast_forward()) return;
@@ -432,5 +439,7 @@ NX_HLE("nvnWindowGetNumActiveTextures", WindowGetNumActiveTextures);
 NX_HLE("nvnWindowSetNumActiveTextures", WindowSetNumActiveTextures);
 NX_HLE("nvnWindowGetPresentInterval", WindowGetPresentInterval);
 NX_HLE("nvnWindowSetPresentInterval", WindowSetPresentInterval);
+
+void set_frame_cap(int fps) { g_frame_cap.store(fps == 30 ? 30 : 60, std::memory_order_relaxed); }
 
 }  // namespace nx::nvn

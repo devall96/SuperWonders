@@ -34,7 +34,7 @@ bool load_settings(const std::string& path, Settings& s) {
         const char* l = line.c_str();
         if (std::sscanf(l, "width=%d", &v) == 1 && v >= 640 && v <= 7680) s.width = v;
         else if (std::sscanf(l, "height=%d", &v) == 1 && v >= 360 && v <= 4320) s.height = v;
-        else if (std::sscanf(l, "internal_resolution=%d", &v) == 1) s.internal_resolution = std::clamp(v, 0, 4);
+        else if (std::sscanf(l, "internal_resolution=%d", &v) == 1) s.internal_resolution = std::clamp(v, 0, 6);
         else if (std::sscanf(l, "volume=%d", &v) == 1) s.volume = std::clamp(v, 0, 100);
         else if (std::sscanf(l, "muted=%d", &v) == 1) s.muted = v != 0;
         else if (std::sscanf(l, "fullscreen=%d", &v) == 1) s.fullscreen = v != 0;
@@ -55,6 +55,8 @@ bool load_settings(const std::string& path, Settings& s) {
         else if (std::sscanf(l, "antialiasing=%d", &v) == 1) s.antialiasing = std::clamp(v, 0, 1);
         else if (std::sscanf(l, "anisotropy=%d", &v) == 1) s.anisotropy = std::clamp(v, 0, 16);
         else if (std::sscanf(l, "rumble=%d", &v) == 1) s.rumble = std::clamp(v, 0, 100);
+        else if (std::sscanf(l, "vsync=%d", &v) == 1) s.vsync = std::clamp(v, 0, 3);
+        else if (std::sscanf(l, "frame_cap=%d", &v) == 1) s.frame_cap = v == 30 ? 30 : 60;
         else if (std::sscanf(l, "controller_custom_mask=%u", &u) == 1) s.controller_custom_mask = u;
         else {
             int index = -1, binding = -1;
@@ -81,7 +83,8 @@ void save_settings(const std::string& path, const Settings& s) {
       << "\nmetric_game_speed=" << s.metric_game_speed << "\nmetric_frametime_graph=" << s.metric_frametime_graph
       << "\noverlay_position=" << s.overlay_position << "\ncontroller_custom_mask=" << s.controller_custom_mask
       << "\nupscaler=" << s.upscaler << "\nfsr_sharpness=" << s.fsr_sharpness << "\nantialiasing=" << s.antialiasing
-      << "\nanisotropy=" << s.anisotropy << "\nrumble=" << s.rumble << '\n';
+      << "\nanisotropy=" << s.anisotropy << "\nrumble=" << s.rumble << "\nvsync=" << s.vsync
+      << "\nframe_cap=" << s.frame_cap << '\n';
     for (size_t i = 0; i < kControlCount; ++i)
         f << "keyboard_" << i << '=' << s.keyboard_bindings[i] << '\n'
           << "controller_" << i << '=' << s.controller_bindings[i] << '\n';
