@@ -78,7 +78,9 @@ VkPipelineCache pipeline_cache() {
     VkPhysicalDeviceProperties p{};
     p_vkGetPhysicalDeviceProperties(vk_physical(), &p);
     char name[64];
-    std::snprintf(name, sizeof name, "/pipelines_%04x_%04x.bin", p.vendorID, p.deviceID);
+    // GPL dynamic mode (nvn_pipeline.cpp) has its own file: the two modes' pipelines never share our cache.
+    std::snprintf(name, sizeof name, "/pipelines_%s%04x_%04x.bin", gpl_dynamic_state() ? "gpl_" : "", p.vendorID,
+                  p.deviceID);
     g_path = plat::data_root() + name;
     std::vector<uint8_t> data;
     if (FILE* f = plat::fopen_utf8(g_path, "rb")) {
