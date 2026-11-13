@@ -16,6 +16,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <atomic>
 #include <tuple>
 #include <vector>
 
@@ -275,6 +276,18 @@ bool init() {
 // first. A new Android window (the app back from home or the lock screen) needs a new surface (gpu_present).
 void* g_window = nullptr;
 uint64_t g_window_gen = 0;
+std::atomic<int> g_vsync_wanted{1};  // set_vsync; the swapchain is re-made when it differs from g_vsync_made
+int g_vsync_made = -1;
+
+int vsync_mode() {
+    static const int forced = [] {
+        const char* e = std::getenv("NX_VSYNC");
+        if (!e) return std::getenv("NX_FIFO") ? 0 : -1;  // NX_FIFO=1: FIFO, as before
+        const std::string v = e;
+        return v == "on" ? 0 : v == "fast" ? 1 : v == "adaptive" ? 2 : v == "off" ? 3 : -1;
+    }();
+    return forced >= 0 ? forced : g_vsync_wanted.load(std::memory_order_relaxed);
+}
 bool make_surface() {
     if (g_surface) p_vkDestroySurfaceKHR(g_instance, g_surface, nullptr);
     if (g_window) plat::release_window(g_window);
@@ -360,18 +373,29 @@ bool make_swapchain() {
     // refresh, two clocks drifting against each other (stutter near 60 fps, docs/nvn/DEBUG.md #33). MAILBOX never
     // blocks and shows the newest frame at each refresh; else IMMEDIATE (MoltenVK: no display sync in the Metal
     // layer, the macOS compositor still shows whole frames at its refresh), FIFO last. NX_FIFO=1: FIFO (DEBUG.md #62).
-    ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;  // always offered
     uint32_t modes_n = 0;
     p_vkGetPhysicalDeviceSurfacePresentModesKHR(g_physical, g_surface, &modes_n, nullptr);
     std::vector<VkPresentModeKHR> modes(modes_n);
     p_vkGetPhysicalDeviceSurfacePresentModesKHR(g_physical, g_surface, &modes_n, modes.data());
     auto has = [&](VkPresentModeKHR m) { return std::find(modes.begin(), modes.end(), m) != modes.end(); };
-    if (!std::getenv("NX_FIFO")) {
+    // The player's VSync (set_vsync): On FIFO; Fast MAILBOX, else IMMEDIATE (the default, as before); Adaptive
+    // FIFO_RELAXED, else FIFO; Off IMMEDIATE, else MAILBOX. Whatever is missing falls back to FIFO.
+    const int vsync = vsync_mode();
+    if (vsync == 1) {
         if (has(VK_PRESENT_MODE_MAILBOX_KHR))
             ci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
         else if (has(VK_PRESENT_MODE_IMMEDIATE_KHR))
             ci.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    } else if (vsync == 2) {
+        if (has(VK_PRESENT_MODE_FIFO_RELAXED_KHR)) ci.presentMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+    } else if (vsync == 3) {
+        if (has(VK_PRESENT_MODE_IMMEDIATE_KHR))
+            ci.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        else if (has(VK_PRESENT_MODE_MAILBOX_KHR))
+            ci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
     }
+    g_vsync_made = vsync;
     static const char* const mode_names[] = {"IMMEDIATE", "MAILBOX", "FIFO", "FIFO_RELAXED"};
     log("nvn/vk: present mode %s (%u modes offered)", ci.presentMode <= 3 ? mode_names[ci.presentMode] : "?", modes_n);
     ci.clipped = VK_TRUE;
@@ -394,6 +418,8 @@ bool make_swapchain() {
 }
 
 }  // namespace
+
+void set_vsync(int mode) { g_vsync_wanted.store(mode < 0 || mode > 3 ? 1 : mode); }
 
 void flush_pipeline_cache() {
     std::lock_guard<std::recursive_mutex> lock(g_gpu);
@@ -664,6 +690,17 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         g_swapchain = VK_NULL_HANDLE;
         log("nvn/vk: new window: surface and swapchain re-made");
         if (!make_surface()) return;
+    }
+    if (g_swapchain && vsync_mode() != g_vsync_made) {  // the player changed VSync: a swapchain with the new mode
+        if (async_gpu()) frame_wait_all();
+        p_vkDeviceWaitIdle(g_device);
+        present_pass_release();
+        overlay::release();
+        fsr_release();
+        fxaa_release();
+        p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
+        g_swapchain = VK_NULL_HANDLE;
+        log("nvn/vk: VSync changed: swapchain re-made");
     }
     if (!g_swapchain && !make_swapchain()) return;
     uint32_t index = 0;

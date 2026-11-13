@@ -77,6 +77,8 @@ void apply_settings(const overlay::Settings& s, bool persist) {
     nvn::set_fsr(s.upscaler == 1, float(s.fsr_sharpness) / 100.0f);
     nvn::set_fxaa(s.antialiasing == 1);
     nvn::set_anisotropy(s.anisotropy);
+    nvn::set_vsync(s.vsync);
+    nvn::set_frame_cap(s.frame_cap);
     g_rumble_strength = std::clamp(s.rumble, 0, 100);
     if (s.fullscreen != before.fullscreen || s.width != before.width || s.height != before.height ||
         s.always_on_top != before.always_on_top)

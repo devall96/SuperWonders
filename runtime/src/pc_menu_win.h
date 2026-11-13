@@ -53,6 +53,8 @@ struct PcMenuState {
     int upscaler = 1;          // overlay menu: 0 bilinear, 1 FSR 1
     int fsr_sharpness = 25;    // overlay menu: RCAS stops x 100
     int antialiasing = 0;      // overlay menu: 0 off, 1 FXAA
+    int vsync = 1;             // overlay menu: 0 On, 1 Fast, 2 Adaptive, 3 Off
+    int frame_cap = 60;        // overlay menu: 60 or 30
     int anisotropy = 0;        // overlay menu: 0 the game's, else 2..16
     int rumble = 100;          // overlay menu: rumble strength, percent
     std::array<int, kPcControlCount> keyboard_bindings = {

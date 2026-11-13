@@ -68,6 +68,11 @@ GpuImage* fxaa_record(VkCommandBuffer cb, GpuImage& src);  // the anti-aliased i
 void fxaa_release();
 // nvn_sampler.cpp: the player's anisotropic filtering (0 the game's, 2..16); read at the first sampler (a restart).
 void set_anisotropy(int level);
+// The player's VSync (0 On: FIFO, 1 Fast: MAILBOX else IMMEDIATE, 2 Adaptive: FIFO_RELAXED, 3 Off: IMMEDIATE);
+// a change re-makes the swapchain at the next present. NX_VSYNC=on|fast|adaptive|off overrides it.
+void set_vsync(int mode);
+// The player's frame rate cap, 60 or 30 (nvn_queue.cpp, pace_present). NX_FPS_CAP=30|60 overrides it.
+void set_frame_cap(int fps);
 bool vk_depth_clip_control();
 // The core features the device was created with (all the GPU has): depthClamp, depthBiasClamp, depthBounds, ...
 const VkPhysicalDeviceFeatures& vk_features();

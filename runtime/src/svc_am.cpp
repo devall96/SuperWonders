@@ -11,22 +11,30 @@ namespace nx {
 namespace {
 std::atomic<int> g_internal_resolution_preset{0};
 std::atomic<int> g_game_language{0};
+std::atomic<uint32_t> g_native_width{1920};  // preset 6: the window's or screen's width (set by the platform)
 }
 
 void set_internal_resolution_preset(int preset) {
     if (preset < 0) preset = 0;
-    if (preset > 4) preset = 4;
+    if (preset > 6) preset = 6;
     g_internal_resolution_preset.store(preset, std::memory_order_relaxed);
 }
 
 float internal_resolution_scale() {
-    static constexpr float scales[] = {1.0f, 2.0f / 3.0f, 5.0f / 6.0f, 1.0f, 4.0f / 3.0f};
-    return scales[g_internal_resolution_preset.load(std::memory_order_relaxed)];
+    static constexpr float scales[] = {1.0f, 2.0f / 3.0f, 5.0f / 6.0f, 1.0f, 4.0f / 3.0f, 2.0f, 0.0f};
+    const int p = g_internal_resolution_preset.load(std::memory_order_relaxed);
+    return p == 6 ? float(g_native_width.load(std::memory_order_relaxed)) / 1920.0f : scales[p];
 }
 
 uint32_t internal_resolution_target_width() {
-    static constexpr uint32_t widths[] = {0, 1280, 1600, 1920, 2560};
-    return widths[g_internal_resolution_preset.load(std::memory_order_relaxed)];
+    // 5: 3840 (4K); 6: Native, the width the image is shown at (no stretching, so no upscaling filter).
+    static constexpr uint32_t widths[] = {0, 1280, 1600, 1920, 2560, 3840, 0};
+    const int p = g_internal_resolution_preset.load(std::memory_order_relaxed);
+    return p == 6 ? g_native_width.load(std::memory_order_relaxed) : widths[p];
+}
+
+void set_native_render_width(uint32_t width) {
+    if (width >= 640 && width <= 7680) g_native_width.store(width, std::memory_order_relaxed);
 }
 
 void set_game_language(int language) {
