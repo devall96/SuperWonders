@@ -40,8 +40,11 @@ running() { if [ $WIN = 1 ]; then tasklist //FI "IMAGENAME eq wonder.exe" 2>/dev
 LOCK=""
 if [ $WIN = 1 ]; then
     LOCK=/c/SuperWonders-private/gpu.lock
-    for i in $(seq 360); do [ -f "$LOCK" ] || break; [ $i = 360 ] && { echo "gpu.lock held: $(cat "$LOCK")"; exit 1; }; sleep 10; done
-    echo "perf-suite $(date +%Y-%m-%dT%H:%M:%S) perf" > "$LOCK"
+    # Taken atomically (noclobber: created only if absent), so two waiters never both see it free and both start.
+    for i in $(seq 360); do
+        (set -C; echo "perf-suite $(date +%Y-%m-%dT%H:%M:%S) perf" > "$LOCK") 2>/dev/null && break
+        [ $i = 360 ] && { echo "gpu.lock held: $(cat "$LOCK")"; exit 1; }; sleep 10
+    done
     trap 'rm -f "$LOCK"' EXIT
 fi
 running && { echo "a game is running: not starting"; exit 1; }
