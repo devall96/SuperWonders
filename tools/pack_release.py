@@ -126,6 +126,11 @@ def pack_kit(kit, a):
             py = os.path.join(kit, "python", "bin", "python3")
     if a.translator:
         copytree(a.translator, os.path.join(kit, "translator"), ignore=shutil.ignore_patterns("*.pdb"))
+        if not WIN:  # (an archive made on Windows has no executable bit: the setup must be able to start these)
+            for exe in ("spirv_harness", "createdump"):
+                p = os.path.join(kit, "translator", exe)
+                if os.path.isfile(p):
+                    os.chmod(p, 0o755)
     else:
         print("note: no --translator: this release can't translate shaders (setup stops at that step)")
     if WIN:
@@ -218,7 +223,9 @@ def privacy_check(folder):
     home = os.path.expanduser("~")
     user = os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser()
     needles = {  # name -> the text
-        "home folder": home, "home folder (/)": home.replace("\\", "/"),
+        # (with a separator after it: a path inside the home folder. The bare name can be ordinary text, e.g. "/root"
+        # in the .NET runtime when the build runs as root.)
+        "home folder": home.rstrip("\\/") + os.sep, "home folder (/)": home.replace("\\", "/").rstrip("/") + "/",
         "SuperWonders-private": "SuperWonders-private", "OneDrive": "OneDrive",
         "user folder": f"Users\\{user}", "user folder (/)": f"Users/{user}", "home (Linux)": f"/home/{user}/",
     }
