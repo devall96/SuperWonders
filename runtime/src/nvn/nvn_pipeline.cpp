@@ -856,6 +856,7 @@ VkImageView sampled_view(VkCommandBuffer cb, uint64_t texture, const ImageShape&
     GpuImage* original = image_of(texture);
     GpuImage* alias = latest_overlapping_shadow_image(texture, original);
     GpuImage* img = alias != original ? alias : ensure_contents(cb, texture);
+    if (GpuImage* copy = feedback_substitute(img)) img = copy;  // a feedback loop's copy (nvn_feedback_copy.cpp)
     static uint64_t no_image = 0, incompatible = 0;
     if (!img) {
         if (++no_image % 100000 == 1) log("nvn/vk: dummy sampled: %llu with no image, %llu with an incompatible view",

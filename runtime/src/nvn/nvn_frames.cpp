@@ -664,6 +664,13 @@ void free_retired_images(uint64_t completed) {
     }
 }
 
+// An image of the runtime's own (a feedback copy, nvn_feedback_copy.cpp), freed like a destroyed texture's.
+void retire_image(std::shared_ptr<GpuImage> image) {
+    if (!image) return;
+    std::lock_guard lk(g_grave_lock);
+    g_grave.push_back({g_submitted + 1, std::move(image)});
+}
+
 // Images of destroyed textures are freed once no submit can use them: the one being recorded now included (a replay
 // on another thread may hold it), hence the serial after the last submitted. Before the graveyard no image was ever
 // freed: the opening creates textures continuously and the process reached 85 GB (the machine froze).

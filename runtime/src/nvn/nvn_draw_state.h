@@ -139,6 +139,11 @@ void sets_begin_submit();
 void sets_log();
 // nvn_draw.cpp: `img` is a target of the open pass that a draw or clear of the pass wrote.
 bool pass_wrote(const GpuImage* img);
+// nvn_feedback_copy.cpp: a draw sampling an image bound as its own pass's target samples a copy of it instead.
+bool feedback_copy_on();
+bool feedback_copy(VkCommandBuffer cb, GpuImage& src);  // outside a pass; the next sampled_view of src gets the copy
+void feedback_clear();
+uint64_t feedback_copies();
 void written_cpu_write(const uint8_t* p, uint64_t size);       // replay-time guest writes (logged when they meet one)
 std::vector<WriteBack> written_take();                         // one write-back per range, at the end of the submit
 void written_reset();

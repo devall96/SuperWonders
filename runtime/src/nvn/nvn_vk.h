@@ -170,6 +170,8 @@ struct FrameTimes {
 FrameTimes& frame_times();
 void frame_log(uint64_t frames);  // the mode's counters, with the timing log
 void free_retired_images(uint64_t completed);
+void retire_image(std::shared_ptr<GpuImage> image);
+GpuImage* feedback_substitute(const GpuImage* img);  // nvn_feedback_copy.cpp: this draw's copy of img, or null  // freed once no submit can use it (nvn_frames.cpp)
 // A GPU-written image of a destroyed texture with the same memory and shape (nvn_frames.cpp), or null.
 std::shared_ptr<GpuImage> reuse_image(const Texture& t);  // images of textures destroyed before submit `completed` + 1
 

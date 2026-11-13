@@ -228,6 +228,7 @@ uint64_t g_dump_draws = 0, g_dump_request = 0;
 // DispatchCompute: the bound program's compute stage over (x, y, z) groups, outside render passes, then a barrier
 // so what it wrote is visible to what follows.
 void dispatch(VkCommandBuffer cb, const Cmd& c) {
+    feedback_clear();  // a draw's feedback copies are its own: a dispatch samples the images themselves
     static const bool off = std::getenv("NX_NO_COMPUTE") != nullptr;  // debug: skip compute dispatches
     if (off) return;
     const auto* shaders = program_shaders(g_state.program);
@@ -344,6 +345,44 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
             }
         return t;
     }();
+    // Feedback loops (nvn_feedback_copy.cpp): a sampled image that is also a target of this draw's pass. The pass ends,
+    // each such image is copied, and the draw samples the copy (sampled_view) while the restarted pass renders into
+    // the image. NX_FEEDBACK_LOG=1: the shaders that do it, and a count every 600 frames.
+    feedback_clear();
+    {
+        static const bool fb_log = std::getenv("NX_FEEDBACK_LOG") != nullptr;
+        static std::set<std::string> seen;
+        static uint64_t hits = 0, last_frame = 0;
+        std::vector<GpuImage*> loops;
+        for (const ResolvedTexture& r : g_textures.resolved) {
+            GpuImage* si = r.texture ? image_of(r.texture) : nullptr;
+            if (!si || std::find(loops.begin(), loops.end(), si) != loops.end()) continue;
+            for (uint32_t k = 0; k <= tt.color_count; k++) {
+                uint64_t target = k < tt.color_count ? tt.colors[k] : tt.depth;
+                if (!target || image_of(target) != si) continue;
+                loops.push_back(si);
+                hits++;
+                if (fb_log) {
+                    std::string slot = k < tt.color_count ? "color " + std::to_string(k) : std::string("depth");
+                    if (seen.size() < 60 && seen.insert(std::string(fs ? fs->hash : "-") + " " + slot).second)
+                        log("nvn: feedback: fs %s samples its own %s (%ux%u, format %d, pass wrote it: %d)",
+                            fs ? fs->hash.c_str() : "-", slot.c_str(), si->width, si->height, int(si->format),
+                            int(pass_wrote(si)));
+                }
+                break;
+            }
+        }
+        if (fb_log && g_frame / 600 != last_frame)
+            last_frame = g_frame / 600, log("nvn: feedback draws so far: %llu, copies %llu", (unsigned long long)hits,
+                                            (unsigned long long)feedback_copies());
+        if (!loops.empty() && feedback_copy_on()) {
+            if (g_rendering) {
+                g_stats.breaks_textures++;
+                draw_end_rendering(cb, 1);
+            }
+            for (GpuImage* si : loops) feedback_copy(cb, *si);
+        }
+    }
     GpuImage* primary_target = tt.color_count && tt.colors[0] ? image_of(tt.colors[0]) : nullptr;
     const float target_scale = primary_target ? primary_target->render_scale : 1.0f;
     vertex_read_barrier(cb, vs);  // G4
