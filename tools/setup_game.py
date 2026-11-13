@@ -83,6 +83,11 @@ def harness_command():
     exe = "spirv_harness.exe" if WIN else "spirv_harness"
     for p in (os.environ.get("NX_SPIRV_HARNESS"), os.path.join(ROOT, "translator", exe)):
         if p and os.path.isfile(p):
+            if not WIN and not p.endswith(".dll") and not os.access(p, os.X_OK):
+                try:  # (copied without its executable bit; inside a read-only AppImage the packer has set it)
+                    os.chmod(p, os.stat(p).st_mode | 0o755)
+                except OSError:
+                    pass
             return [p] if not p.endswith(".dll") else ["dotnet", p]
     dll = os.path.join(ROOT, "private", "build", "spirv_harness", "bin", "Release", "net10.0", "spirv_harness.dll")
     if os.path.isfile(dll) and shutil.which("dotnet"):

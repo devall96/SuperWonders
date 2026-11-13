@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <nx/game.h>
 #include <nx/runtime.h>
 
 #include "platform.h"
@@ -57,7 +58,10 @@ void log(const char* fmt, ...) {
 #elif defined(_WIN32)
         std::string def = plat::data_root() + "/nx.log";  // direct Explorer launch uses the same log location as the old batch launcher
 #else
-        std::string def = plat::data_root() + "/../nx.log";
+        // A developer's private/<game> keeps it at private/nx.log, where the test tools read it; a release's data
+        // folder ($XDG_DATA_HOME/superwonders, a portable data/) keeps it inside, with everything else of the player's.
+        const std::string root = plat::data_root();
+        std::string def = root == game::kInfo.pc_data_root ? root + "/../nx.log" : root + "/nx.log";
 #endif
         std::string file = path ? path : def;
         // Keep the previous session's log (a problem report should survive reopening the game).
