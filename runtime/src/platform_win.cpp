@@ -237,7 +237,7 @@ static overlay::Settings to_overlay(const PcMenuState& s) {
     o.metric_game_speed = s.metric_game_speed, o.metric_frametime_graph = s.metric_frametime_graph;
     o.overlay_position = s.overlay_position, o.controller_custom_mask = s.controller_custom_mask;
     o.upscaler = s.upscaler, o.fsr_sharpness = s.fsr_sharpness, o.antialiasing = s.antialiasing;
-    o.anisotropy = s.anisotropy, o.rumble = s.rumble;
+    o.anisotropy = s.anisotropy, o.rumble = s.rumble, o.vsync = s.vsync, o.frame_cap = s.frame_cap;
     for (size_t i = 0; i < kPcControlCount; ++i)
         o.keyboard_bindings[i] = s.keyboard_bindings[i], o.controller_bindings[i] = s.controller_bindings[i];
     return o;
@@ -253,7 +253,7 @@ static PcMenuState from_overlay(const overlay::Settings& o) {
     s.metric_game_speed = o.metric_game_speed, s.metric_frametime_graph = o.metric_frametime_graph;
     s.overlay_position = o.overlay_position, s.controller_custom_mask = o.controller_custom_mask;
     s.upscaler = o.upscaler, s.fsr_sharpness = o.fsr_sharpness, s.antialiasing = o.antialiasing;
-    s.anisotropy = o.anisotropy, s.rumble = o.rumble;
+    s.anisotropy = o.anisotropy, s.rumble = o.rumble, s.vsync = o.vsync, s.frame_cap = o.frame_cap;
     for (size_t i = 0; i < kPcControlCount; ++i)
         s.keyboard_bindings[i] = o.keyboard_bindings[i], s.controller_bindings[i] = o.controller_bindings[i];
     return s;
@@ -351,7 +351,8 @@ static void save_pc_settings() {
          << "\ncontroller_custom_mask=" << g_pc_settings.controller_custom_mask
          << "\nupscaler=" << g_pc_settings.upscaler << "\nfsr_sharpness=" << g_pc_settings.fsr_sharpness
          << "\nantialiasing=" << g_pc_settings.antialiasing << "\nanisotropy=" << g_pc_settings.anisotropy
-         << "\nrumble=" << g_pc_settings.rumble << '\n';
+         << "\nrumble=" << g_pc_settings.rumble << "\nvsync=" << g_pc_settings.vsync
+         << "\nframe_cap=" << g_pc_settings.frame_cap << '\n';
     for (size_t i = 0; i < kPcControlCount; ++i)
         file << "keyboard_" << i << '=' << g_pc_settings.keyboard_bindings[i] << '\n'
              << "controller_" << i << '=' << g_pc_settings.controller_bindings[i] << '\n';
@@ -364,7 +365,7 @@ static void load_pc_settings() {
         int value = 0;
         if (std::sscanf(line.c_str(), "width=%d", &value) == 1 && value >= 640 && value <= 7680) g_pc_settings.width = value;
         else if (std::sscanf(line.c_str(), "height=%d", &value) == 1 && value >= 360 && value <= 4320) g_pc_settings.height = value;
-        else if (std::sscanf(line.c_str(), "internal_resolution=%d", &value) == 1) g_pc_settings.internal_resolution = std::clamp(value, 0, 4);
+        else if (std::sscanf(line.c_str(), "internal_resolution=%d", &value) == 1) g_pc_settings.internal_resolution = std::clamp(value, 0, 6);
         else if (std::sscanf(line.c_str(), "volume=%d", &value) == 1) g_pc_settings.volume = std::clamp(value, 0, 100);
         else if (std::sscanf(line.c_str(), "muted=%d", &value) == 1) g_pc_settings.muted = value != 0;
         else if (std::sscanf(line.c_str(), "fullscreen=%d", &value) == 1) g_pc_settings.fullscreen = value != 0;
@@ -394,6 +395,8 @@ static void load_pc_settings() {
         else if (std::sscanf(line.c_str(), "anisotropy=%d", &value) == 1)
             g_pc_settings.anisotropy = std::clamp(value, 0, 16);
         else if (std::sscanf(line.c_str(), "rumble=%d", &value) == 1) g_pc_settings.rumble = std::clamp(value, 0, 100);
+        else if (std::sscanf(line.c_str(), "vsync=%d", &value) == 1) g_pc_settings.vsync = std::clamp(value, 0, 3);
+        else if (std::sscanf(line.c_str(), "frame_cap=%d", &value) == 1) g_pc_settings.frame_cap = value == 30 ? 30 : 60;
         else {
             int index = -1, binding = -1;
             if (std::sscanf(line.c_str(), "keyboard_%d=%d", &index, &binding) == 2 &&
@@ -412,6 +415,10 @@ static void load_pc_settings() {
     nx::nvn::set_fsr(g_pc_settings.upscaler == 1, float(g_pc_settings.fsr_sharpness) / 100.0f);
     nx::nvn::set_fxaa(g_pc_settings.antialiasing == 1);
     nx::nvn::set_anisotropy(g_pc_settings.anisotropy);
+    nx::nvn::set_vsync(g_pc_settings.vsync);
+    nx::nvn::set_frame_cap(g_pc_settings.frame_cap);
+    nx::set_native_render_width(g_pc_settings.fullscreen ? uint32_t(GetSystemMetrics(SM_CXSCREEN))
+                                                          : uint32_t(g_pc_settings.width));
 }
 
 static void set_game_volume() {
@@ -617,7 +624,7 @@ static void apply_pc_menu(const PcMenuState& state, bool persist) {
     g_pc_settings.width = std::clamp(g_pc_settings.width, 640, 7680);
     g_pc_settings.height = std::clamp(g_pc_settings.height, 360, 4320);
     g_pc_settings.volume = std::clamp(g_pc_settings.volume, 0, 100);
-    g_pc_settings.internal_resolution = std::clamp(g_pc_settings.internal_resolution, 0, 4);
+    g_pc_settings.internal_resolution = std::clamp(g_pc_settings.internal_resolution, 0, 6);
     g_pc_settings.language = std::clamp(g_pc_settings.language, 0, 3);
     g_pc_settings.game_language = std::clamp(g_pc_settings.game_language, 0, 3);
     g_pc_settings.memory_limit_gb = std::clamp(g_pc_settings.memory_limit_gb, 2, 32);
@@ -631,6 +638,8 @@ static void apply_pc_menu(const PcMenuState& state, bool persist) {
     nx::nvn::set_fsr(g_pc_settings.upscaler == 1, float(g_pc_settings.fsr_sharpness) / 100.0f);
     nx::nvn::set_fxaa(g_pc_settings.antialiasing == 1);
     nx::nvn::set_anisotropy(g_pc_settings.anisotropy);
+    nx::nvn::set_vsync(g_pc_settings.vsync);
+    nx::nvn::set_frame_cap(g_pc_settings.frame_cap);
     if (g_fullscreen != g_pc_settings.fullscreen) toggle_fullscreen(g_window);
     else if (size_changed && !g_fullscreen) resize_window_client(g_window, g_pc_settings.width, g_pc_settings.height);
     if (topmost_changed && g_window)

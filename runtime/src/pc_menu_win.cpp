@@ -25,11 +25,11 @@ constexpr int kLanguageTop = 31;
 constexpr int kLanguageBottom = 66;
 constexpr int kLanguageItemHeight = 27;
 constexpr int kResolution[][2] = {{1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}};
-constexpr const wchar_t* kInternalResolution[][5] = {
-    {L"Original / Dynamic", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440"},
-    {L"Originale / dinamica", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440"},
-    {L"Original / Dynamisch", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440"},
-    {L"Originale / dynamique", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440"},
+constexpr const wchar_t* kInternalResolution[][7] = {
+    {L"Original / Dynamic", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440", L"3840 x 2160", L"Native (screen)"},
+    {L"Originale / dinamica", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440", L"3840 x 2160", L"Nativa (schermo)"},
+    {L"Original / Dynamisch", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440", L"3840 x 2160", L"Nativ (Bildschirm)"},
+    {L"Originale / dynamique", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440", L"3840 x 2160", L"Native (écran)"},
 };
 constexpr const wchar_t* kLanguageNames[] = {L"English", L"Italiano", L"Deutsch", L"Français"};
 
@@ -196,7 +196,7 @@ void paint_video(HDC dc) {
 
     paint_text(dc, text.internal_resolution, RECT{44, 235, 385, 263}, RGB(214, 222, 238), 16);
     paint_arrow(dc, 270, kInternalResolution[std::clamp(g_state.language, 0, 3)]
-                                           [std::clamp(g_state.internal_resolution, 0, 4)]);
+                                           [std::clamp(g_state.internal_resolution, 0, 6)]);
 
     rounded(dc, RECT{44, 326, 516, 370}, RGB(35, 43, 61), RGB(68, 81, 105));
     paint_text(dc, g_state.fullscreen ? text.fullscreen_off : text.fullscreen_on, RECT{58, 326, 502, 370},
