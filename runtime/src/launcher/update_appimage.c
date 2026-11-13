@@ -341,7 +341,7 @@ bool appimage_install(const char *work, const UcRelease *r, const char *pubkey_h
         return fail(p, "file_error", "The new version could not be made runnable", "Reason: %s.", strerror(errno));
     }
     char *const health[] = {part, "--update-health", NULL};
-    rc = run(health, NULL, 90, false, NULL, 0, 0, NULL, 0, 0);
+    int rc = run(health, NULL, 90, false, NULL, 0, 0, NULL, 0, 0);
     fprintf(stderr, "[update] health check: exit %d\n", rc);
     if (rc != HEALTH_EXIT) {
         remove(part);

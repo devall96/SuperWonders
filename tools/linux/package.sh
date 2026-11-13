@@ -20,6 +20,8 @@ OUTDIR=$PWD/build/dist
 VERSION=$(cat VERSION)
 NAME=SuperWonders-v$VERSION-Linux-x64
 JOBS=$(nproc)
+PY=${PYTHON:-python3.12}  # (the container's; on a newer host, PYTHON=python3)
+GCCV=$(ls /usr/lib/gcc/x86_64-linux-gnu | sort -n | tail -1)  # (11 in the container; whatever the host has)
 : "${TRANSLATOR:?TRANSLATOR=<a published linux-x64 spirv_harness>}"
 
 fetch() {  # url sha256 file: downloads pinned by their SHA-256
@@ -60,7 +62,7 @@ patchelf --set-rpath '$ORIGIN/../lib' "$T/bin/clang" "$T/bin/ld.lld"
 # the sysroot: glibc's and libstdc++'s headers and what linking a shared library against them needs (crt files,
 # libc.so's linker script and its parts, libstdc++.so, libgcc). Only for building: at run time the system's are used.
 S=$T/sysroot
-for pkg in libc6-dev linux-libc-dev libstdc++-11-dev libgcc-11-dev libc6 libstdc++6 libgcc-s1; do
+for pkg in libc6-dev linux-libc-dev libstdc++-$GCCV-dev libgcc-$GCCV-dev libc6 libstdc++6 libgcc-s1; do
     dpkg -L "$pkg" | while read -r f; do
         [ -f "$f" ] || [ -L "$f" ] || continue
         case $f in /usr/share/*|/etc/*|/usr/lib/x86_64-linux-gnu/gconv/*|/sbin/*|/usr/bin/*|/usr/sbin/*) continue ;; esac
@@ -83,7 +85,7 @@ find "$PYDIR" -type l | while read -r l; do t=$(readlink -f "$l"); rm "$l"; cp "
 find "$T" -type l | while read -r l; do t=$(readlink -f "$l"); rm "$l"; cp "$t" "$l"; done
 
 # ---- the release folder and the portable archive (tools/pack_release.py)
-python3.12 tools/pack_release.py --build "$B" --out "$L/release" --version "$VERSION" --repo "${REPO:-}" \
+"$PY" tools/pack_release.py --build "$B" --out "$L/release" --version "$VERSION" --repo "${REPO:-}" \
     --translator "$TRANSLATOR" --linux-toolchain "$T" --linux-python "$PYDIR"
 mkdir -p "$OUTDIR" && mv "$L/release/$NAME.tar.gz" "$OUTDIR/"
 
@@ -93,7 +95,7 @@ rm -rf "$APPDIR" && mkdir -p "$APPDIR/usr" && cp -a "$L/release/SuperWonders" "$
 cp tools/linux/AppRun "$APPDIR/" && chmod +x "$APPDIR/AppRun"
 cp tools/linux/superwonders.desktop "$APPDIR/"
 cp assets/wonder_app.svg "$APPDIR/superwonders.svg" && ln -sf superwonders.svg "$APPDIR/.DirIcon"
-python3.12 tools/pack_release.py --check-only "$APPDIR"  # (the AppDir too: nothing of this PC or of the game)
+"$PY" tools/pack_release.py --check-only "$APPDIR"  # (the AppDir too: nothing of this PC or of the game)
 fetch https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage \
       ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 appimagetool-x86_64.AppImage
 fetch https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64 \
