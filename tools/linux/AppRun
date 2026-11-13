@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppImage entry: SuperWonders, with what ships beside it (game-build/, VERSION, update.ini) in usr/bin
+HERE=$(dirname "$(readlink -f "$0")")
+exec "$HERE/usr/bin/wonder" "$@"

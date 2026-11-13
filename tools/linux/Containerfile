@@ -1,0 +1,23 @@
+# Build environment for the Linux AppImage (tools/linux/appimage.sh): Ubuntu 22.04, so the result runs on glibc 2.35+.
+# After Savage Wind's (github.com/Revivedx/SavageWindRecomp, MIT: tools/linux/Containerfile).
+FROM docker.io/library/ubuntu:22.04
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git file xz-utils patchelf make ninja-build pkg-config python3 \
+        g++ software-properties-common gpg-agent \
+        # SDL3's video / audio / input backends (it loads them at run time; the headers decide what it can use)
+        libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
+        libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgl-dev libdrm-dev libgbm-dev \
+        libpulse-dev libasound2-dev libpipewire-0.3-dev libdbus-1-dev libudev-dev libibus-1.0-dev \
+        # glslc: the runtime's own compute shaders (CMakeLists.txt, runtime/shaders), compiled at build time
+        libvulkan-dev glslc \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    # clang 21 from apt.llvm.org: the recompiled code needs a recent clang (22.04's is 14); lld for the game code library
+    && curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /etc/apt/trusted.gpg.d/apt.llvm.org.asc \
+    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" > /etc/apt/sources.list.d/llvm.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends python3.12 python3.12-venv clang-21 lld-21 llvm-21 \
+    && rm -rf /var/lib/apt/lists/* \
+    && for t in clang clang++ ld.lld llvm-ar llvm-nm llvm-ranlib llvm-strip; do ln -sf $t-21 /usr/bin/$t; done \
+    # CMake 3.25 or later (22.04 has 3.22), from PyPI
+    && python3.12 -m venv /opt/cmake && /opt/cmake/bin/pip install -q cmake==3.31.6 && ln -sf /opt/cmake/bin/cmake /usr/bin/cmake

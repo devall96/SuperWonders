@@ -62,6 +62,15 @@ class Kit:
             self.entry = os.path.join(self.root, "runtime", "src", "gamelib_entry.cpp")
         self.recomp = os.path.join(self.root, "recomp")
         self.cxx = self.find_compiler()
+        # Linux release (the AppImage): the kit's own clang builds against the kit's sysroot (glibc and libstdc++ of the
+        # build container, Ubuntu 22.04: tools/linux/package.sh), so it needs nothing installed; the library then uses
+        # the system's libstdc++ at run time, as the program does.
+        self.sysroot = os.path.join(HERE, "toolchain", "sysroot")
+        extra = []
+        if not WIN and os.path.isdir(self.sysroot) and self.cxx and self.cxx.startswith(os.path.join(HERE, "toolchain")):
+            extra = [f"--sysroot={self.sysroot}", f"--gcc-toolchain={self.sysroot}/usr"]
+        self.cxxflags = CXXFLAGS + extra
+        self.ldflags = LDFLAGS + extra + (["-fuse-ld=lld"] if extra else [])
 
     def find_compiler(self):
         exe = "clang++.exe" if WIN else "clang++"
@@ -93,7 +102,7 @@ class Kit:
             h.update(os.path.basename(f).encode() + b"\0")
             with open(f, "rb") as fh:
                 h.update(fh.read().replace(b"\r\n", b"\n"))  # (a checkout's line endings don't count)
-        h.update(" ".join(CXXFLAGS + ["|"] + LDFLAGS).encode())
+        h.update(" ".join(CXXFLAGS + ["|"] + LDFLAGS).encode())  # (not the sysroot's path: where the kit is doesn't matter)
         h.update(self.compiler_version().encode())
         h.update(LIB.encode())
         return h.hexdigest()[:32]
@@ -195,7 +204,7 @@ def compile_all(kit, gen, obj, jobs, done_before, share):
     def one(u):
         src, out, extra = u
         tmp = out + ".tmp"
-        r = subprocess.run([kit.cxx, *CXXFLAGS, *extra, "-c", src, "-o", tmp], capture_output=True, text=True)
+        r = subprocess.run([kit.cxx, *kit.cxxflags, *extra, "-c", src, "-o", tmp], capture_output=True, text=True)
         if r.returncode:
             return src, r.stderr
         os.replace(tmp, out)
@@ -219,7 +228,7 @@ def link(kit, objs, game_dir, work):
     with open(rsp, "w") as f:
         for o in objs:
             f.write('"' + o.replace("\\", "/") + '"\n')
-    cmd = [kit.cxx, *LDFLAGS, "-o", tmp, "@" + rsp]
+    cmd = [kit.cxx, *kit.ldflags, "-o", tmp, "@" + rsp]
     if WIN:
         cmd.append("-Wl,-Map," + os.path.join(work, f"{GAME}_game.map").replace("\\", "/"))
     r = subprocess.run(cmd, capture_output=True, text=True)

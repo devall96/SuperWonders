@@ -230,9 +230,33 @@ bool make_dirs(const std::string& path) {
 
 void log_line(const char* line) { std::fprintf(stderr, "%s\n", line); }
 
+// Where the player's data lives (saves, settings, the game set up from their files), first found:
+//   1. NX_DATA_ROOT
+//   2. an AppImage release: $XDG_DATA_HOME/superwonders (~/.local/share/superwonders), since the AppImage is a read-only
+//      image (as Savage Wind's: its runtime/paths.c). $APPIMAGE counts only when this program runs inside $APPDIR: an
+//      AppImage launcher passes its own on to the games it starts.
+//   3. a portable release (the folder holds game-build/, tools/pack_release.py): data/ next to the program
+//   4. a developer's build: games/<game>'s pc_data_root ("private/<game>")
 std::string data_root() {
-    const char* r = std::getenv("NX_DATA_ROOT");
-    return r && *r ? r : nx::game::kInfo.pc_data_root;
+    static const std::string root = [] {
+        const char* r = std::getenv("NX_DATA_ROOT");
+        if (r && *r) return std::string(r);
+        char exe[4096];
+        const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+        const std::string self = n > 0 ? std::string(exe, size_t(n)) : std::string();
+        const char *image = std::getenv("APPIMAGE"), *appdir = std::getenv("APPDIR");
+        char mount[4096];
+        if (image && *image && appdir && realpath(appdir, mount) && self.rfind(std::string(mount) + "/", 0) == 0) {
+            const char *xdg = std::getenv("XDG_DATA_HOME"), *home = std::getenv("HOME");
+            const std::string base = xdg && *xdg ? xdg : std::string(home && *home ? home : "/tmp") + "/.local/share";
+            return base + "/superwonders";
+        }
+        const std::string dir = self.substr(0, self.rfind('/'));
+        std::error_code ec;
+        if (!dir.empty() && std::filesystem::is_directory(dir + "/game-build", ec)) return dir + "/data";
+        return std::string(nx::game::kInfo.pc_data_root);
+    }();
+    return root;
 }
 
 std::string setting(const std::string& key) {
@@ -447,6 +471,10 @@ void game_thread() {
 }  // namespace
 
 int main() {
+    // SuperWonders Update starts a new AppImage once with --update-health before putting it in place
+    // (launcher/update_appimage.c): reaching main means its libraries all loaded.
+    for (const std::string& a : nx::plat::program_args())
+        if (a == "--update-health") return 73;
     nx::plat::g_main_tid = pid_t(syscall(SYS_gettid));
 
     // The crash handler runs on its own stack: a guest stack overflow must still be reported.

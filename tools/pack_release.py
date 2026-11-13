@@ -22,7 +22,9 @@ SuperWonders-v<version>-Windows-x64.zip / SuperWonders-v<version>-Linux-x64.tar.
 usage: pack_release.py --build <build dir> --out <dir> [--version V] [--repo owner/name] [--sign key.pem]
                        [--toolchain <llvm-mingw>] [--python <CPython install>] [--site-packages <dir>]
                        [--translator <dir of a published spirv_harness>] [--no-archive]
-On Linux, --toolchain and --python are left out: the system's clang++ and python3 (with the same modules) are used.
+Linux: --linux-toolchain <dir with bin/clang++, lib/, sysroot/> and --linux-python <a relocatable Python with the modules>
+(tools/linux/package.sh makes both in the build container) put them in game-build/; left out, the player's own
+clang++ and python3 are used (a developer's portable folder). The AppImage itself: tools/linux/package.sh.
 """
 import argparse
 import glob
@@ -48,7 +50,7 @@ def copy(src, dst):
 
 
 def copytree(src, dst, ignore=None):
-    shutil.copytree(src, dst, ignore=ignore, dirs_exist_ok=True)
+    shutil.copytree(src, dst, ignore=ignore, dirs_exist_ok=True, symlinks=True)
 
 
 def size(path):
@@ -101,6 +103,7 @@ def pack_python(src, site, dst):
 
 
 def pack_kit(kit, a):
+    py = sys.executable
     copy(os.path.join(REPO, "tools", "gamebuild.py"), os.path.join(kit, "gamebuild.py"))
     copy(os.path.join(REPO, "tools", "setup_game.py"), os.path.join(kit, "setup_game.py"))
     for f in glob.glob(os.path.join(REPO, "recomp", "*.py")):
@@ -113,11 +116,16 @@ def pack_kit(kit, a):
     for h in ("cpu.h", "module.h", "gamelib.h"):
         copy(os.path.join(REPO, "runtime", "include", "nx", h), os.path.join(kit, "include", "nx", h))
     copy(os.path.join(REPO, "runtime", "src", "gamelib_entry.cpp"), os.path.join(kit, "gamelib_entry.cpp"))
+    if not WIN:  # (first: the kit id names the compiler the kit builds with)
+        if a.linux_toolchain:
+            copytree(a.linux_toolchain, os.path.join(kit, "toolchain"), ignore=None)
+        if a.linux_python:
+            copytree(a.linux_python, os.path.join(kit, "python"), ignore=shutil.ignore_patterns("__pycache__"))
+            py = os.path.join(kit, "python", "bin", "python3")
     if a.translator:
         copytree(a.translator, os.path.join(kit, "translator"), ignore=shutil.ignore_patterns("*.pdb"))
     else:
         print("note: no --translator: this release can't translate shaders (setup stops at that step)")
-    py = sys.executable
     if WIN:
         if not a.toolchain or not a.python:
             raise SystemExit("Windows: --toolchain (llvm-mingw) and --python (a CPython install) are needed")
@@ -190,7 +198,7 @@ def write_manifest(folder, version):
         for name in sorted(files):
             p = os.path.join(base, name)
             rel = os.path.relpath(p, folder).replace(os.sep, "/")
-            if rel == "superwonders-manifest.txt":
+            if rel == "superwonders-manifest.txt" or os.path.islink(p):  # (links come with the archive, not the list)
                 continue
             h = hashlib.sha256()
             with open(p, "rb") as f:
@@ -229,6 +237,8 @@ def main():
     ap.add_argument("--python", help="a CPython install (Windows)")
     ap.add_argument("--site-packages", help=f"where {', '.join(PY_MODULES)} are (default: this Python's)")
     ap.add_argument("--translator", help="a published spirv_harness (dotnet publish --self-contained)")
+    ap.add_argument("--linux-toolchain", help="Linux: clang, lld and a sysroot for game-build/toolchain")
+    ap.add_argument("--linux-python", help="Linux: a relocatable Python with the modules, for game-build/python")
     ap.add_argument("--no-archive", action="store_true")
     a = ap.parse_args()
     out = os.path.abspath(a.out)

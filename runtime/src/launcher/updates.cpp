@@ -4,8 +4,11 @@
 //
 // What it does, and the only things it does:
 //   - asks GitHub for the list of releases of the repository in update.ini (next to the program) and picks the newest
-//     one newer than this copy (VERSION) with this platform's archive: SuperWonders-v<version>-Windows-x64.zip,
-//     SuperWonders-v<version>-Linux-x64.tar.gz. Pre-releases only for a copy that is one.
+//     one newer than this copy (VERSION) with this platform's file: SuperWonders-v<version>-Windows-x64.zip,
+//     SuperWonders-v<version>-Linux-x64.AppImage (the Linux release; a portable SuperWonders-v<version>-Linux-x64.tar.gz
+//     updates as Windows does). Pre-releases only for a copy that is one.
+//   - an AppImage is replaced as one file, in place (launcher/update_appimage.c, Savage Wind's): downloaded next to
+//     it, checked, started once (--update-health), swapped in, the old one kept as <file>.old until the next start.
 //   - downloads it and checks it against the SHA-256 GitHub publishes for it (required), and against its .sig when a
 //     key is built in (SUPERWONDERS_UPDATE_PUBKEY, ECDSA P-256 X then Y in hex: tools/sign_update.py's --public)
 //   - unpacks it to update/staging with the system's tar, and checks every file against the release's file list
@@ -53,6 +56,9 @@
 #include "imgui.h"
 #include "launcher/update_core.h"
 #include "launcher/update_crypto.h"
+#if !defined(_WIN32)
+#include "launcher/update_appimage.h"
+#endif
 #include "overlay/option_rows.h"
 #include "overlay/overlay_ui.h"
 #include "platform.h"
@@ -67,9 +73,21 @@ namespace rows = overlay::rows;
 namespace ui = overlay::ui;
 
 #if defined(_WIN32)
-constexpr const char* kSuffix = "-Windows-x64.zip";
+bool appimage() { return false; }
 #else
-constexpr const char* kSuffix = "-Linux-x64.tar.gz";
+bool appimage() { return appimage_path() != nullptr; }  // (only when $APPIMAGE is this program's own)
+#endif
+const char* suffix() {
+#if defined(_WIN32)
+    return "-Windows-x64.zip";
+#else
+    return appimage() ? "-Linux-x64.AppImage" : "-Linux-x64.tar.gz";
+#endif
+}
+#ifdef SUPERWONDERS_UPDATE_PUBKEY
+constexpr const char* kPubkey = SUPERWONDERS_UPDATE_PUBKEY;
+#else
+constexpr const char* kPubkey = nullptr;
 #endif
 constexpr const char* kManifest = "superwonders-manifest.txt";
 
@@ -93,7 +111,9 @@ bool read_text(const fs::path& p, std::string& out) {
 
 // ---- where things are ----
 fs::path prog() { return u8(program_dir()); }
-fs::path work() { return prog() / "update"; }
+// The download and the journal: next to the program, or in the data folder for an AppImage (its folder is the
+// AppImage's read-only mount).
+fs::path work() { return appimage() ? u8(plat::data_root()) / "update" : prog() / "update"; }
 
 std::string current_version() {
     std::string v = env("SUPERWONDERS_UPDATE_AS");
@@ -138,7 +158,12 @@ bool allowed_url(const std::string& url) {
 std::string managed_by() {
     std::string m = env("SUPERWONDERS_MANAGED");
     if (!m.empty() && m != "0") return m;
-    const fs::path dir = prog(), up = dir.parent_path();
+#if defined(_WIN32)
+    const fs::path dir = prog();
+#else
+    const fs::path dir = appimage() ? u8(appimage_path()).parent_path() : prog();
+#endif
+    const fs::path up = dir.parent_path();
     auto has = [](const char* d, const char* name) {
         std::error_code ec;
         return fs::exists(u8(d) / name, ec);
@@ -343,6 +368,12 @@ std::vector<std::string> read_journal() {
 // At start: finish or undo an install (post_update.c in Savage Wind).
 void tidy_at_start() {
     std::error_code ec;
+#if !defined(_WIN32)
+    if (appimage() && appimage_has_old()) {  // (this is the new version, running: the old file goes)
+        appimage_remove_old();
+        log("update: the update to %s finished; removed the previous AppImage", NX_VERSION_STRING);
+    }
+#endif
     if (!fs::exists(journal_path(), ec)) return;
     std::vector<std::string> lines = read_journal();
     if (!lines.empty() && lines.back() == "done") {
@@ -370,7 +401,7 @@ void check_now() {
 #else
     const bool need_sig = false;
 #endif
-    switch (uc_pick_release(json.c_str(), current_version().c_str(), kSuffix, need_sig, &rel, &skipped)) {
+    switch (uc_pick_release(json.c_str(), current_version().c_str(), suffix(), need_sig, &rel, &skipped)) {
         case UC_PICK_BAD_JSON: return set(St::Failed, "the answer wasn't GitHub's list of releases");
         case UC_PICK_CURRENT:
             return set(St::Current, skipped ? "a newer release has no checksum" + std::string(need_sig ? " or signature" : "") +
@@ -406,6 +437,29 @@ bool apply_now() {
         std::lock_guard lk(g.lock);
         rel = g.rel;
     }
+#if !defined(_WIN32)
+    if (appimage()) {
+        if (!allowed_url(rel.zip_url)) return fail("the release's file isn't on GitHub: " + std::string(rel.zip_url));
+        std::error_code ec;
+        fs::create_directories(work(), ec);
+        g.step = "Downloading", g.progress = 0;
+        set(St::Applying, std::string("downloading ") + rel.zip_name);
+        static volatile float progress;
+        progress = 0;
+        std::atomic<bool> done{false};
+        std::thread follow([&] {
+            while (!done) g.progress = progress, plat::sleep_ns(100'000'000);
+        });
+        UpdateProblem p{};
+        const bool ok = appimage_install(str(work()).c_str(), &rel, kPubkey, &progress, &p);
+        done = true;
+        follow.join();
+        if (!ok) return fail(std::string(p.title) + ": " + p.what);
+        log("update: installed %s over %s (AppImage)", rel.version, NX_VERSION_STRING);
+        set(St::Restarting, std::string("installed ") + rel.version + ": restarting");
+        return true;
+    }
+#endif
     std::error_code ec;
     fs::remove_all(work(), ec);
     fs::create_directories(work() / "staging", ec);
@@ -525,6 +579,14 @@ void worker(bool apply) {
     if (apply) restart = apply_now();
     if (restart) {
         // The new version's launcher (--config): it finishes the update and builds the game code if it needs to.
+#if !defined(_WIN32)
+        if (appimage()) {
+            UpdateProblem p{};
+            appimage_relaunch(&p);  // (returns only if it couldn't)
+            set(St::Failed, std::string(p.title) + ": " + p.what);
+            return;
+        }
+#endif
 #if defined(_WIN32)
         start_detached({str(prog() / "wonder.exe"), "--config"});
 #else

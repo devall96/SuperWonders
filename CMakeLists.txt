@@ -295,6 +295,9 @@ if(NX_GAME_LIBRARY)
     # SuperWonders Launcher: the start screen before the game (setup, settings, mods, updates; launcher/launcher.h)
     list(APPEND NX_RUNTIME_SOURCES runtime/src/launcher/launcher.cpp runtime/src/launcher/updates.cpp
          runtime/src/launcher/update_core.c runtime/src/launcher/update_crypto.c)
+    if(NOT WIN32)
+        list(APPEND NX_RUNTIME_SOURCES runtime/src/launcher/update_appimage.c)  # (an AppImage updates itself)
+    endif()
 endif()
 # The release's version (VERSION): the launcher shows it, the updater compares it with the newest release's.
 file(STRINGS "${CMAKE_SOURCE_DIR}/VERSION" NX_VERSION LIMIT_COUNT 1)
@@ -336,7 +339,26 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # (Ubuntu/Debian: apt install libsdl3-dev libvulkan-dev). The loader comes with the GPU driver (libvulkan1).
     # The F1 settings menu (pc_menu_win.cpp) is Win32 drawing code and is not built here.
     find_package(Threads REQUIRED)
-    find_package(SDL3 REQUIRED CONFIG)
+    # NX_SDL_BUNDLED: SDL3 built from its release here and linked in (the AppImage, built on Ubuntu 22.04, which has no
+    # SDL3; tools/linux/package.sh). Off: the distribution's (apt install libsdl3-dev).
+    option(NX_SDL_BUNDLED "Build SDL3 from source and link it statically" OFF)
+    if(NX_SDL_BUNDLED)
+        include(FetchContent)
+        set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+        set(SDL_STATIC ON CACHE BOOL "" FORCE)
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+        set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(SDL3
+            URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
+            URL_HASH SHA256=9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+        FetchContent_MakeAvailable(SDL3)
+        add_library(SDL3::SDL3 ALIAS SDL3-static)
+    else()
+        find_package(SDL3 REQUIRED CONFIG)
+    endif()
     # vk_gen.{h,cpp} need the registry version tools/gen_vk.py generated from (1.4.357); distributions ship older
     # headers (Ubuntu 26.04: 1.4.341). Use the LunarG SDK when VULKAN_SDK is set, else Khronos' headers at that tag.
     if(DEFINED ENV{VULKAN_SDK})
