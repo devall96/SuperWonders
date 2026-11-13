@@ -18,12 +18,12 @@
 #include <cstring>
 
 #include <nx/game.h>
+#include <nx/gamelib.h>
 #include <nx/module.h>
 #include <nx/runtime.h>
 
 #include "platform.h"
 
-extern const nx::ModuleInfo nx_module_main;
 
 namespace nx::wonder {
 
@@ -82,8 +82,9 @@ void wait_press_key_in_title(CPU& c) {
 }
 
 void install(Hook& h) {
-    const LoadedModule* m = module_at(nx_module_main.base);
-    const uint64_t at = nx_module_main.base + h.offset;
+    const uint64_t main_base = game_lib().main->base;  // (nx/gamelib.h: linked in, or the game code library)
+    const LoadedModule* m = module_at(main_base);
+    const uint64_t at = main_base + h.offset;
     for (int k = 0; k < 8; k++)
         if (ld<uint32_t>(at + 4 * k) != h.code[k]) {
             log("menu: main+%llx is not the 1.0.0 code: no Quit Game on the %s", (unsigned long long)h.offset, h.what);

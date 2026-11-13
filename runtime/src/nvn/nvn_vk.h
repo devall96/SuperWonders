@@ -213,6 +213,9 @@ void frame_dump_write(const GpuImage& img, uint64_t frame);
 // Startup shader preparation progress (nvn_vk.cpp): to the platform and the overlay's compile screen, which is
 // presented from here (at most every 33 ms) while the game has not drawn yet. kind 0: shaders, 1: recorded pipelines.
 void prep_progress(uint64_t done, uint64_t total, bool visible, int kind);
+// Before the game runs (the launcher): Vulkan started if it isn't yet, then one frame of the overlay alone presented
+// (a cleared image with the overlay's screen on top). False: no device or no overlay.
+bool present_ui_frame();
 bool debug_snapshots_pending();  // NX_SNAP_*: this submit recorded snapshots (it is then waited for)
 
 // nvn_draw.cpp: replays one draw-related command; ends the render pass it may have open when asked.

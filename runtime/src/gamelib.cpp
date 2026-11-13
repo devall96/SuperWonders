@@ -48,6 +48,8 @@ bool exists(const std::string& path) {
     return true;
 }
 
+}  // namespace
+
 std::string program_dir() {
 #if defined(_WIN32)
     std::wstring w(32768, L'\0');
@@ -68,6 +70,8 @@ std::string program_dir() {
     return slash == std::string::npos ? "." : s.substr(0, slash);
 #endif
 }
+
+namespace {
 
 // The library's bind function, or null with why filled in.
 NxGameLibBind open_library(const std::string& path, std::string& why) {
@@ -95,14 +99,18 @@ NxGameLibBind open_library(const std::string& path, std::string& why) {
     return bind;
 }
 
-const GameLib* load() {
+std::vector<std::string> places() {
     std::vector<std::string> places;
     if (const char* p = std::getenv("NX_GAMELIB"); p && *p) places.push_back(p);
     places.push_back(program_dir() + "/" NX_GAMELIB_FILE);
     places.push_back(plat::data_root() + "/game/" NX_GAMELIB_FILE);
+    return places;
+}
+
+const GameLib* load() {
 
     std::string tried;
-    for (const std::string& path : places) {
+    for (const std::string& path : places()) {
         if (!exists(path)) {
             tried += "\n  " + path + ": not there";
             continue;
@@ -131,6 +139,12 @@ const GameLib* load() {
 const GameLib& game_lib() {
     static const GameLib* lib = load();
     return *lib;
+}
+
+std::string game_lib_path() {
+    for (const std::string& path : places())
+        if (exists(path)) return path;
+    return {};
 }
 
 #endif

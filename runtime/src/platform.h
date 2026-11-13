@@ -5,7 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace nx::plat {
 
@@ -45,6 +47,13 @@ bool make_dirs(const std::string& path);
 void log_line(const char* line);  // stderr / logcat
 std::string data_root();
 std::string setting(const std::string& key);  // a player setting: config.txt (Android), NX_<KEY> (PC); "" if unset          // where private/ lives ("private" on PC, the app's external files dir on Android)
+
+// ---- the launcher (launcher/launcher.cpp; Windows and Linux) ----
+// The system's folder picker, titled `title`, starting in `start` (may be ""). Returns at once; `done` gets the folder
+// chosen, or "" when the player cancelled, from another thread.
+void pick_folder(const std::string& title, const std::string& start, std::function<void(std::string)> done);
+void open_folder(const std::string& path);  // shows it in the system's file manager
+std::vector<std::string> program_args();     // the command line, without the program's own path
 
 // ---- display, input, audio ----
 void* create_window();       // native window handle for the Vulkan surface (HWND / ANativeWindow*), kept alive

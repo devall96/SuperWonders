@@ -161,8 +161,9 @@ def recompile(kit, exefs, gen, done_before, share):
     for k, (name, base) in enumerate(MODULES):
         part = share * (0.85 if name == "main" else 0.15)
         start = done_before + (0 if k == 0 else share * 0.85)
-        cmd = [sys.executable, "-u", "-m", "recomp",  # (-u: its progress lines as they come, not at the end) os.path.join(exefs, name), os.path.join(gen, name), "--name", name,
-               "--base", base]
+        # (-u: the recompiler's progress lines as they come, not all at the end)
+        cmd = [sys.executable, "-u", "-m", "recomp", os.path.join(exefs, name), os.path.join(gen, name),
+               "--name", name, "--base", base]
         p = subprocess.Popen(cmd, cwd=kit.root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         log = []
         for line in p.stdout:

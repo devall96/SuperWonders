@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 #include <nx/cpu.h>
 #include <nx/module.h>
@@ -52,6 +53,10 @@ struct GameLib {
 
 // The program's side (runtime/src/gamelib.cpp): the modules, from the library or linked in. Fatal if there are none.
 const GameLib& game_lib();
+#if NX_GAME_LIBRARY
+std::string game_lib_path();  // the library game_lib() would load, "" when there is none (the launcher)
+std::string program_dir();    // the folder of the running program
+#endif
 
 }  // namespace nx
 

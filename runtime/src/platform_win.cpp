@@ -27,6 +27,8 @@
 #endif
 #include <windows.h>
 #include <windowsx.h>
+#include <shellapi.h>
+#include <shobjidl.h>
 #include <xaudio2.h>
 #include <xinput.h>
 #include <SDL3/SDL.h>
@@ -1258,3 +1260,67 @@ int main() {
     }
     return 0;
 }
+
+// ---- the launcher's helpers (platform.h) ----
+namespace nx::plat {
+
+static std::wstring utf16(const std::string& s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(size_t(std::max(1, n)) - 1, L' ');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return w;
+}
+
+void pick_folder(const std::string& title, const std::string& start, std::function<void(std::string)> done) {
+    // The dialog is modal to the window but runs on a thread of its own, so the launcher keeps drawing.
+    std::thread([title, start, done] {
+        std::string out;
+        if (SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) {
+            IFileOpenDialog* d = nullptr;
+            if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d)))) {
+                DWORD opt = 0;
+                d->GetOptions(&opt);
+                d->SetOptions(opt | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+                d->SetTitle(utf16(title).c_str());
+                IShellItem* at = nullptr;
+                if (!start.empty() && SUCCEEDED(SHCreateItemFromParsingName(utf16(start).c_str(), nullptr, IID_PPV_ARGS(&at))))
+                    d->SetFolder(at), at->Release();
+                IShellItem* item = nullptr;
+                if (SUCCEEDED(d->Show(nx::g_window)) && SUCCEEDED(d->GetResult(&item))) {
+                    PWSTR path = nullptr;
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                        int n = WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
+                        out.assign(size_t(std::max(1, n)) - 1, ' ');
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, out.data(), n, nullptr, nullptr);
+                        CoTaskMemFree(path);
+                    }
+                    item->Release();
+                }
+                d->Release();
+            }
+            CoUninitialize();
+        }
+        done(out);
+    }).detach();
+}
+
+void open_folder(const std::string& path) {
+    make_dirs(path);
+    ShellExecuteW(nullptr, L"open", utf16(path).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+std::vector<std::string> program_args() {
+    std::vector<std::string> out;
+    int n = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &n);
+    for (int i = 1; argv && i < n; i++) {
+        int len = WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, nullptr, 0, nullptr, nullptr);
+        std::string a(size_t(std::max(1, len)) - 1, ' ');
+        WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, a.data(), len, nullptr, nullptr);
+        out.push_back(a);
+    }
+    if (argv) LocalFree(argv);
+    return out;
+}
+
+}  // namespace nx::plat

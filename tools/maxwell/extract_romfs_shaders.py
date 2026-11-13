@@ -117,10 +117,14 @@ def main():
     romfs, output = map(os.path.abspath, sys.argv[1:])
     if not os.path.isdir(romfs):
         raise SystemExit(f"RomFS directory does not exist: {romfs}")
-    private_root = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "private"))
+    # Game data never goes into the repository: inside it, only under private/ (a player's data root, outside the
+    # repository or a release's game-build/ folder, is fine: tools/setup_game.py).
+    repo_root = os.path.realpath(REPO)
+    private_root = os.path.join(repo_root, "private")
     output_real = os.path.realpath(output)
-    if os.path.commonpath((private_root, output_real)) != private_root:
-        raise SystemExit(f"Shader extraction output must stay under {private_root}")
+    inside = lambda root: os.path.commonpath((root, output_real)) == root
+    if inside(repo_root) and not inside(private_root):
+        raise SystemExit(f"Shader extraction output inside the repository must stay under {private_root}")
     os.makedirs(output, exist_ok=True)
     extract_romfs(romfs, output)
 

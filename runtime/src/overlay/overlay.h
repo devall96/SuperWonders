@@ -45,6 +45,12 @@ void mouse_wheel(float dy);
 void text_input(uint32_t codepoint);
 void toggle();
 bool is_open();
+// A full-window screen drawn under the menu every frame, with the overlay's look and input (the launcher,
+// launcher/launcher.cpp): called inside the ImGui frame with the image size. Null: none. Input goes to the overlay
+// while one is shown; the menu (toggle) opens over it.
+using ScreenFn = void (*)(float w, float h);
+void set_screen(ScreenFn fn);
+bool screen_shown();
 bool wants_mouse();     // the pointer is over the menu or the menu is open
 bool wants_keyboard();  // keys go to the menu, not the game
 // Called from plat::read_pad with the player's pad: navigates the menu with a controller, toggles it with

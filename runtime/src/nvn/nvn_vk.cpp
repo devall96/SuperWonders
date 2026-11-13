@@ -724,14 +724,9 @@ void present_headless(uint64_t texture) {
 // gpu_present, under the GPU lock, before the game has drawn anything. Its progress goes to the platform (the Win32
 // window's painted screen when the ImGui overlay is off) and to the overlay's compile screen, which is presented here
 // on its own: a cleared swapchain image with the overlay on top, at most 30 times a second.
-void prep_progress(uint64_t done, uint64_t total, bool visible, int kind) {
-    plat::shader_compile_progress(done, total, visible);
-    overlay::shader_progress(done, total, visible, kind);
-    if (!visible || !overlay::enabled() || !g_device) return;
-    static uint64_t last = 0;
-    const uint64_t now = plat::monotonic_ns();
-    if (last && now - last < 33'000'000ull) return;
-    last = now;
+// A frame of the overlay alone: a cleared swapchain image with the overlay on top (the compile screen, the launcher).
+// The caller holds the GPU lock.
+static void present_overlay_frame() {
     static const bool headless_present = std::getenv("NX_HEADLESS_PRESENT") != nullptr;
     if ((plat::headless() && !headless_present) || plat::window_minimized()) return;
     if (!g_swapchain && !make_swapchain()) return;
@@ -783,6 +778,25 @@ void prep_progress(uint64_t done, uint64_t total, bool visible, int kind) {
     pi.pImageIndices = &index;
     r = p_vkQueuePresentKHR(g_queue, &pi);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) make_swapchain();
+}
+
+void prep_progress(uint64_t done, uint64_t total, bool visible, int kind) {
+    plat::shader_compile_progress(done, total, visible);
+    overlay::shader_progress(done, total, visible, kind);
+    if (!visible || !overlay::enabled() || !g_device) return;
+    static uint64_t last = 0;
+    const uint64_t now = plat::monotonic_ns();
+    if (last && now - last < 33'000'000ull) return;
+    last = now;
+    present_overlay_frame();
+}
+
+bool present_ui_frame() {
+    std::lock_guard lk(g_gpu);
+    drain_objects();
+    if (!overlay::enabled() || !init()) return false;
+    present_overlay_frame();
+    return true;
 }
 
 void gpu_present(uint64_t texture, const int32_t* crop) {

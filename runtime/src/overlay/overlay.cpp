@@ -37,6 +37,9 @@ bool g_has_pending = false;
 Settings g_pending;   // from the platform (sync), taken by the next frame
 Settings g_settings;  // the presenting thread's copy
 std::atomic<bool> g_open{false};
+std::atomic<ScreenFn> g_screen{nullptr};  // a full-window screen under the menu (the launcher), or none
+// Input goes to the overlay: the menu is open, or a screen is shown.
+bool taking_input() { return g_open || g_screen.load(); }
 std::atomic<bool> g_metrics{false};
 std::atomic<int> g_input_frames{0};  // frames to run after input while closed (hover/close animations)
 std::atomic<bool> g_fading{false};   // the menu is still fading out
@@ -190,7 +193,7 @@ void draw_metrics(float height) {
 
 // Controller navigation: the pad (Nintendo button meanings) as ImGui's gamepad keys. A confirms, B cancels.
 void feed_pad(ImGuiIO& io) {
-    const bool open = g_open.load();  // (closed and fading out: the menu takes no input)
+    const bool open = taking_input();  // (closed and fading out: the menu takes no input)
     uint64_t b = open ? g_pad_buttons.load() : 0;
     int32_t lx = open ? g_pad_lx.load() : 0, ly = open ? g_pad_ly.load() : 0;
     struct Map {
@@ -252,20 +255,20 @@ void key_event(int raw, Key key, bool down) {
         toggle();
         return;
     }
-    if (!g_open && key != KeyNone) return;
+    if (!taking_input() && key != KeyNone) return;
     push({Event::KeyEv, raw, key, down});
 }
 void mouse_move(float x, float y) {
-    if (g_open) push({Event::Move, 0, KeyNone, false, x, y});
+    if (taking_input()) push({Event::Move, 0, KeyNone, false, x, y});
 }
 void mouse_button(int button, bool down) {
-    if (g_open) push({Event::Button, button, KeyNone, down});
+    if (taking_input()) push({Event::Button, button, KeyNone, down});
 }
 void mouse_wheel(float dy) {
-    if (g_open) push({Event::Wheel, 0, KeyNone, false, 0, dy});
+    if (taking_input()) push({Event::Wheel, 0, KeyNone, false, 0, dy});
 }
 void text_input(uint32_t ch) {
-    if (g_open) push({Event::Text, 0, KeyNone, false, 0, 0, ch});
+    if (taking_input()) push({Event::Text, 0, KeyNone, false, 0, 0, ch});
 }
 void set_open(bool open, const char* why) {
     if (g_open.exchange(open) == open) return;
@@ -275,8 +278,13 @@ void set_open(bool open, const char* why) {
 
 void toggle() { set_open(!g_open.load(), "toggle"); }
 bool is_open() { return g_open; }
-bool wants_mouse() { return g_open; }
-bool wants_keyboard() { return g_open; }
+bool wants_mouse() { return taking_input(); }
+bool wants_keyboard() { return taking_input(); }
+void set_screen(ScreenFn fn) {
+    g_screen = fn;
+    g_input_frames = 30;
+}
+bool screen_shown() { return g_screen.load() != nullptr; }
 
 void filter_pad(plat::PadState& p) {
     if (!enabled()) return;
@@ -290,7 +298,7 @@ void filter_pad(plat::PadState& p) {
         if (pressed & plat::kR) g_tab_request = (g_tab + 1) % menu_tab_count();
     }
     g_previous_buttons = p.buttons;
-    if (g_open || combo_now) p = plat::PadState{};
+    if (taking_input() || combo_now) p = plat::PadState{};
 }
 
 void presented(uint64_t now_ns) {
@@ -309,7 +317,7 @@ void presented(uint64_t now_ns) {
 void game_interval(int interval) { g_game_interval = std::max(1, interval); }
 
 bool frame_wanted() {
-    return g_open || g_metrics || g_input_frames > 0 || g_fading || progress_wanted() || ui::notices_active();
+    return g_open || g_screen.load() || g_metrics || g_input_frames > 0 || g_fading || progress_wanted() || ui::notices_active();
 }
 
 void notify(const char* text) { ui::notify(text); }
@@ -353,7 +361,8 @@ ImDrawData* build_frame(uint32_t w, uint32_t h) {
                     g_capture = -1;
                     break;
                 }
-                if (e.key == KeyEscape && e.down && g_capture < 0 && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup)) {
+                if (e.key == KeyEscape && e.down && g_open && g_capture < 0 &&
+                    !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup)) {
                     set_open(false, "Esc");
                     break;
                 }
@@ -386,8 +395,10 @@ ImDrawData* build_frame(uint32_t w, uint32_t h) {
     if (appearing) reveal = std::max(reveal, 0.04f);
     reveal = ui::approach(reveal, open ? 1.0f : 0.0f, open ? 18.0f : 26.0f);
     g_fading = !open && reveal > 0.0f;
+    const ScreenFn screen = g_screen.load();
+    if (screen) screen(float(w), float(h));  // under the menu, which the screen can open (its Settings)
     if (progress_wanted()) draw_progress(float(h));
-    if (g_settings.metrics_enabled && !progress_wanted()) draw_metrics(float(h));  // (no game frames to measure yet)
+    if (g_settings.metrics_enabled && !progress_wanted() && !screen) draw_metrics(float(h));  // (no game frames to measure yet)
     if (open || reveal > 0.0f) {
         const float a = ui::smoothstep(reveal);
         ImGui::GetBackgroundDrawList()->AddRectFilled({0, 0}, io.DisplaySize, IM_COL32(4, 2, 10, int(120 * a)));

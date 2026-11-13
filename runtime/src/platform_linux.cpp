@@ -508,3 +508,49 @@ int main() {
         SDL_Delay(2);
     }
 }
+
+// ---- the launcher's helpers (platform.h) ----
+namespace nx::plat {
+
+void pick_folder(const std::string& title, const std::string& start, std::function<void(std::string)> done) {
+    auto* cb = new std::function<void(std::string)>(std::move(done));
+    run_on_main([&] {
+        SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_WINDOW_POINTER, linux_host::g_window);
+        SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_TITLE_STRING, title.c_str());
+        if (!start.empty()) SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_LOCATION_STRING, start.c_str());
+        SDL_ShowFileDialogWithProperties(
+            SDL_FILEDIALOG_OPENFOLDER,
+            [](void* user, const char* const* list, int) {
+                auto* f = static_cast<std::function<void(std::string)>*>(user);
+                (*f)(list && list[0] ? std::string(list[0]) : std::string());
+                delete f;
+            },
+            cb, props);
+        SDL_DestroyProperties(props);
+    });
+}
+
+void open_folder(const std::string& path) {
+    make_dirs(path);
+    SDL_OpenURL(("file://" + path).c_str());
+}
+
+std::vector<std::string> program_args() {
+    std::vector<std::string> out;
+    FILE* f = std::fopen("/proc/self/cmdline", "rb");
+    if (!f) return out;
+    std::string all;
+    char buf[4096];
+    for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) all.append(buf, n);
+    std::fclose(f);
+    for (size_t at = 0, first = 1; at < all.size(); first = 0) {
+        size_t end = all.find(' ', at);
+        if (end == std::string::npos) end = all.size();
+        if (!first) out.push_back(all.substr(at, end - at));
+        at = end + 1;
+    }
+    return out;
+}
+
+}  // namespace nx::plat

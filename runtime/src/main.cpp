@@ -11,6 +11,9 @@
 #include <nx/runtime.h>
 
 #include "kernel.h"
+#if NX_GAME_LIBRARY
+#include "launcher/launcher.h"
+#endif
 #include "platform.h"
 
 namespace nx {
@@ -144,6 +147,9 @@ void boot() {
     if (plat::setting("trace") == "1") g_trace = true;
     memory_init();
     kernel_init();
+#if NX_GAME_LIBRARY
+    launcher::run();  // the start screen, when the game isn't set up or --config (after the guest memory is reserved)
+#endif
     const ModuleInfo* mods[] = {&main_module(), &sdk_module()};
     load_modules(mods, 2, plat::data_root() + "/analysis");
 
