@@ -35,6 +35,15 @@ EXE=${EXE:-$W/build/wonder$([ $WIN = 1 ] && echo .exe)}
 PY=${PYTHON:-python3}
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 running() { if [ $WIN = 1 ]; then tasklist //FI "IMAGENAME eq wonder.exe" 2>/dev/null | grep -qi wonder.exe; else pgrep -x wonder >/dev/null; fi; }
+# Windows: the GPU is shared with other sessions through C:\SuperWonders-private\gpu.lock (taken for the whole suite,
+# "perf" in it, removed on exit). An existing lock means someone else is running: wait, then give up after an hour.
+LOCK=""
+if [ $WIN = 1 ]; then
+    LOCK=/c/SuperWonders-private/gpu.lock
+    for i in $(seq 360); do [ -f "$LOCK" ] || break; [ $i = 360 ] && { echo "gpu.lock held: $(cat "$LOCK")"; exit 1; }; sleep 10; done
+    echo "perf-suite $(date +%Y-%m-%dT%H:%M:%S) perf" > "$LOCK"
+    trap 'rm -f "$LOCK"' EXIT
+fi
 running && { echo "a game is running: not starting"; exit 1; }
 [ -d "$W/fixtures/save-course11" ] || { echo "no fixture save at $W/fixtures/save-course11"; exit 1; }
 
@@ -76,7 +85,10 @@ run_one() {  # scenario run#
     fi
     local disp=(SDL_VIDEO_DRIVER=offscreen)
     [ "$DISPLAY_MODE" = window ] && disp=(NX_FULLSCREEN=1)
-    [ $WIN = 1 ] && [ "$DISPLAY_MODE" != window ] && disp=(NX_HEADLESS_PRESENT=1)
+    # Windows offscreen: a hidden window (NX_HEADLESS) that still presents (NX_HEADLESS_PRESENT), so the trace has
+    # real presents and nothing shows on the desktop. The data root is given explicitly (the default is beside the exe).
+    [ $WIN = 1 ] && [ "$DISPLAY_MODE" != window ] && disp=(NX_HEADLESS=1 NX_HEADLESS_PRESENT=1)
+    [ $WIN = 1 ] && disp+=(NX_DATA_ROOT="$(cygpath -w "$W")")
     echo "== $tag ($secs s)"
     (cd "$ROOT" && env ${mesa:+$mesa} "${disp[@]}" NX_MUTE=1 NX_LOG="$OUT/$tag.log" NX_FRAMETRACE="$OUT/$tag.csv" \
         NX_INPUT_SCRIPT="$input" "${EXTRA[@]}" timeout $secs "$EXE" >"$OUT/$tag.out" 2>&1)
