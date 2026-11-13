@@ -212,16 +212,23 @@ bool init() {
     if (gpl_ext) *tail = &fgpl, tail = &fgpl.pNext;
     p_vkGetPhysicalDeviceFeatures2(g_physical, &features);
     {
-        // NX_GPL=0: off; NX_GPL=1: on even without fast linking; default: on with graphicsPipelineLibrary and
-        // fast linking (without it a link may cost a compile, and the old path is no worse).
+        // NX_GPL=0: off; NX_GPL=1: on (even without fast linking); default: on with graphicsPipelineLibrary and
+        // fast linking (without it a link may cost a compile, and the old path is no worse), except on AMD's
+        // proprietary driver. There, running GPL and non-GPL builds from the same exe breaks whichever runs second:
+        // GPL after non-GPL draws the lit scene as black silhouettes, non-GPL after GPL hangs the GPU at boot. The
+        // driver keeps it per exe path across runs and builds (its own shader cache, not ours: it survived our
+        // cache files moved aside, a separate pipeline cache, a specialization constant, a renamed entry point,
+        // distinct static state and a distinct VkApplicationInfo engine). An in-place update of an existing install
+        // would hit it, so GPL is opt-in there until the cause is known. GPL alone on an exe path renders right.
         const char* e = std::getenv("NX_GPL");
         VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT pgpl{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
-        if (gpl_ext && fgpl.graphicsPipelineLibrary) {
-            VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &pgpl};
-            p_vkGetPhysicalDeviceProperties2(g_physical, &p2);
-        }
-        const bool wanted = !(e && e[0] == '0');
+        VkPhysicalDeviceDriverProperties pdrv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, &pgpl};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &pdrv};
+        if (!(gpl_ext && fgpl.graphicsPipelineLibrary)) pdrv.pNext = nullptr;
+        p_vkGetPhysicalDeviceProperties2(g_physical, &p2);
+        const bool amd_proprietary = pdrv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
+        const bool wanted = e ? e[0] != '0' : !amd_proprietary;
         const bool forced = e && e[0] == '1';
         g_gpl = wanted && gpl_ext && fgpl.graphicsPipelineLibrary && f13.dynamicRendering &&
                 (pgpl.graphicsPipelineLibraryFastLinking || forced);
@@ -230,7 +237,8 @@ bool init() {
             "interpolation %u: %s; pipelineCreationCacheControl %u",
             gpl_ext ? 1u : 0u, fgpl.graphicsPipelineLibrary, pgpl.graphicsPipelineLibraryFastLinking,
             pgpl.graphicsPipelineLibraryIndependentInterpolationDecoration,
-            g_gpl ? "used" : !wanted ? "off (NX_GPL=0)" : "not used", g_cache_control ? 1u : 0u);
+            g_gpl ? "used" : !wanted ? (e ? "off (NX_GPL=0)" : "off by default on AMD's proprietary driver (NX_GPL=1: on)") : "not used",
+            g_cache_control ? 1u : 0u);
         if (g_gpl) {
             dexts.push_back("VK_KHR_pipeline_library");
             dexts.push_back("VK_EXT_graphics_pipeline_library");
