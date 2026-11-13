@@ -258,6 +258,7 @@ enum Event { kEvTitle, kEvMap, kEvCourse, kEvGo, kEvGoal, kEvDeath, kEvCount };
 const char* kEventNames[kEvCount] = {"title", "map", "course", "go", "goal", "death"};
 int64_t g_event_frame[kEvCount] = {};
 std::string g_pending_events;  // fired since the last CSV row
+std::vector<int> g_rec_pending;  // events the recorder has not written yet
 std::string g_scene;   // "course" / "map" / "" from the files the game loads
 std::string g_course;  // the course or world it loaded
 
@@ -296,13 +297,16 @@ struct Recorder {
         flush(fr);
         run = p, run_from = fr;
     }
+    // The new segment starts at frame `fr`, the first pad read after frame() saw the event (as on replay); a held
+    // state goes on in it from its frame 0.
     void anchor(const char* name, int64_t fr) {
         if (!f) return;
+        const bool held = run_from >= 0;
         flush(fr);
         std::fprintf(f, "@%s\n", name);
         std::fflush(f);
         seg_start = fr;
-        if (run_from >= 0) run_from = fr;  // a held state goes on in the new segment, from its frame 0
+        if (held) run_from = fr;
     }
 };
 Recorder g_rec;
@@ -613,7 +617,7 @@ void fire(Event e) {
     const int64_t fr = int64_t(g_frame.load());
     g_event_frame[e] = fr;
     g_pending_events += std::string(g_pending_events.empty() ? "" : "|") + kEventNames[e];
-    g_rec.anchor(kEventNames[e], fr);
+    g_rec_pending.push_back(e);  // written by frame(), where the segment starts
     log("play: event %s at frame %lld (%s)", kEventNames[e], (long long)fr, g_course.c_str());
 }
 
@@ -757,7 +761,7 @@ void frame() {
             else
                 for (int e = 0; e < kEvCount; e++)
                     if (s.anchor == kEventNames[e] && g_event_frame[e] && g_event_frame[e] >= g_seg_start && fr >= g_event_frame[e] + s.value)
-                        at = g_event_frame[e] + s.value;
+                        at = std::max(g_event_frame[e] + s.value, fr);  // (earlier frames' pads were read already)
             if (at < 0) break;
             g_seg++;
             g_seg_start = at;
@@ -785,6 +789,13 @@ void frame() {
                      open.c_str(), g_marks.c_str());
         if (fr % 60 == 0) std::fflush(g_csv);
     }
+    // Anchors start at the first pad read after this point, in the recording and on replay alike ("play: anchor"
+    // lines give that frame; tools/play/probe_to_frames.py rebuilds a recording from them).
+    for (int e : g_rec_pending) {
+        g_rec.anchor(kEventNames[e], fr);
+        log("play: anchor %s from frame %lld", kEventNames[e], (long long)fr);
+    }
+    g_rec_pending.clear();
     g_pad_reads = 0, g_opens = 0, g_open.clear(), g_marks.clear(), g_pending_events.clear();
 }
 
