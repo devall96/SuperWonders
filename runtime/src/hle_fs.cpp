@@ -24,6 +24,7 @@
 
 #include "platform.h"
 #include "frametrace.h"
+#include "play.h"
 
 namespace fs = std::filesystem;
 
@@ -297,6 +298,7 @@ void OpenFile(CPU& c) {  // (FileHandle* out, path, int mode: 1 read, 2 write, 4
     g_files[h] = std::make_shared<File>(f, guest);
     st<uint64_t>(c.x[0], h);
     if (trace_fs()) log("fs: OpenFile(%s, %d) -> %llu", guest.c_str(), mode, (unsigned long long)h);
+    play::file_opened(guest);
     c.x[0] = kOk;
 }
 

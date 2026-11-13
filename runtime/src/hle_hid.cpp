@@ -16,6 +16,7 @@
 
 #include "ipc.h"
 #include "platform.h"
+#include "play.h"
 
 namespace nx {
 
@@ -62,6 +63,7 @@ PadState read() {
     for (const auto& s : script)
         if (g_frame >= s.frame && g_frame < s.frame + 8) p.buttons |= s.buttons;
     read_pad(p);
+    play::pad(p);  // NX_INPUT_FRAMES / NX_INPUT_REPLAY / NX_INPUT_RECORD (play.cpp)
     // Stick directions as buttons, like the hid sysmodule reports them.
     constexpr int32_t t = kStickMax / 2;
     if (p.lx < -t) p.buttons |= kStickLLeft;

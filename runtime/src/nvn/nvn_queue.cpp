@@ -20,6 +20,7 @@
 #include "nvn.h"
 #include "platform.h"
 #include "frametrace.h"
+#include "play.h"
 
 namespace nx {
 uint64_t vsync_wait(uint64_t target);  // hle_vi.cpp
@@ -433,6 +434,7 @@ void QueuePresentTexture(CPU& c) {
     uint64_t n = ++g_presents;
     if (n == 1 || (n & (n - 1)) == 0) log("nvn: present #%llu (texture %d)", (unsigned long long)n, int(c.x[2]));
     g_frame++;
+    play::frame();  // probe, anchors, scanner steps (play.cpp)
 }
 
 // (NVNwindow*, int x, int y, int width, int height): the part of the window textures shown. In handheld mode
