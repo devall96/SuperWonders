@@ -17,6 +17,10 @@
 #include <set>
 #include <string>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -27,6 +31,7 @@
 #include "platform.h"
 
 #include <nx/game.h>
+#include "frametrace.h"
 
 namespace nx::nvn {
 
@@ -57,6 +62,58 @@ VkSurfaceTransformFlagBitsKHR g_sc_transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT
 VkFormat g_sc_format = VK_FORMAT_B8G8R8A8_UNORM;
 VkSemaphore g_acquired = VK_NULL_HANDLE, g_rendered = VK_NULL_HANDLE;
 VkBool32 g_depth_clip_control = VK_FALSE;
+
+// NX_FRAMETRACE: when each frame reached the display (VK_KHR_present_id + VK_KHR_present_wait), for the trace's
+// display file (frametrace.h). A thread waits on each present id in turn; a swapchain about to be destroyed is
+// forgotten first (present_wait_forget, under the wait's lock, so no wait is on it).
+bool g_present_wait = false;
+PFN_vkWaitForPresentKHR g_wait_for_present = nullptr;  // our own: vk_bridge re-fills the shared table
+struct PresentWait {
+    std::mutex lock;  // held while waiting on a swapchain
+    std::mutex queue_lock;
+    std::condition_variable cv;
+    std::deque<std::tuple<uint64_t, uint64_t, VkSwapchainKHR, uint64_t>> queue;  // id, trace frame, swapchain, generation
+    uint64_t next_id = 0, generation = 0;
+    bool failed = false;
+} g_pw;
+
+void present_wait_thread() {
+    for (;;) {
+        std::tuple<uint64_t, uint64_t, VkSwapchainKHR, uint64_t> item;
+        {
+            std::unique_lock lk(g_pw.queue_lock);
+            g_pw.cv.wait(lk, [] { return !g_pw.queue.empty(); });
+            item = g_pw.queue.front();
+            g_pw.queue.pop_front();
+        }
+        std::lock_guard lk(g_pw.lock);
+        auto [id, frame, sc, generation] = item;
+        if (generation != g_pw.generation || g_pw.failed) continue;  // its swapchain is gone
+        VkResult r = g_wait_for_present(g_device, sc, id, 250'000'000ull);
+        if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) {
+            ft::displayed(frame, plat::monotonic_ns());
+        } else if (r != VK_TIMEOUT) {
+            g_pw.failed = true;
+            log("nvn/vk: frame trace: vkWaitForPresentKHR returned %d; no display times from here on", int(r));
+        }
+    }
+}
+
+void present_wait_push(uint64_t id, uint64_t frame) {
+    static bool started = false;
+    if (!started) started = true, std::thread(present_wait_thread).detach();
+    std::lock_guard lk(g_pw.queue_lock);
+    g_pw.queue.emplace_back(id, frame, g_swapchain, g_pw.generation);
+    g_pw.cv.notify_one();
+}
+
+void present_wait_forget() {
+    if (!g_present_wait) return;
+    std::lock_guard lk(g_pw.lock);
+    std::lock_guard q(g_pw.queue_lock);
+    g_pw.queue.clear();
+    g_pw.generation++;
+}
 bool g_gpl = false, g_cache_control = false;  // vk_gpl(), vk_pipeline_cache_control()
 VkPhysicalDeviceFeatures g_features{};  // the core features enabled (vk_features())
 VkDescriptorPool g_descriptors = VK_NULL_HANDLE;
@@ -205,6 +262,20 @@ bool init() {
         dexts.push_back("VK_KHR_portability_subset");
         *tail = &fport, tail = &fport.pNext;
     }
+    // NX_FRAMETRACE: present ids and waits for the trace's display times (present_wait_thread).
+    VkPhysicalDevicePresentIdFeaturesKHR fpid{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+    VkPhysicalDevicePresentWaitFeaturesKHR fpw{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
+    // Not on SDL's offscreen driver: Mesa's headless surface offers present wait but its wait is a null call
+    // (RADV, Mesa 26.0: vkWaitForPresentKHR crashed in the driver). There is no display to time there anyway.
+    const char* video = std::getenv("SDL_VIDEO_DRIVER");
+    const bool offscreen = video && std::strcmp(video, "offscreen") == 0;
+    const bool pw_ext = ft::enabled() && !offscreen && has_extension(dext, "VK_KHR_present_id") &&
+                        has_extension(dext, "VK_KHR_present_wait");
+    if (pw_ext) {
+        dexts.push_back("VK_KHR_present_id");
+        dexts.push_back("VK_KHR_present_wait");
+        *tail = &fpid, fpid.pNext = &fpw, tail = &fpw.pNext;
+    }
     // VK_EXT_graphics_pipeline_library (nvn_pipeline.cpp): last in the chain, so it can be unlinked again when unused.
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT fgpl{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
@@ -259,6 +330,10 @@ bool init() {
     f11.shaderDrawParameters = draw_params;
     log("nvn/vk: samplerMirrorClampToEdge %u, shaderDrawParameters %u", mirror_clamp, draw_params);
     g_depth_clip_control = fclip.depthClipControl;
+    g_present_wait = pw_ext && fpid.presentId && fpw.presentWait;
+    if (ft::enabled())
+        log("nvn/vk: frame trace: display times %s",
+            g_present_wait ? "on (present wait)" : offscreen ? "off (offscreen: no display)" : "not available");
     g_features = features.features;
     // NX_ASTC_DECODE=1|linear|srgb: the CPU decoder even where the GPU has ASTC (to compare the two on one GPU).
     set_astc_native(g_features.textureCompressionASTC_LDR, g_features.textureCompressionBC);
@@ -281,6 +356,14 @@ bool init() {
     dci.pNext = &features;
     if (!check(p_create_device(g_physical, &dci, nullptr, &g_device), "vkCreateDevice")) return false;
     p_vkGetDeviceQueue(g_device, g_family, 0, &g_queue);
+    if (g_present_wait) {  // a device extension command: from the device (the instance table has none)
+        auto gdpa = reinterpret_cast<PFN_vkGetDeviceProcAddr>(
+            reinterpret_cast<PFN_vkGetInstanceProcAddr>(g_gipa)(g_instance, "vkGetDeviceProcAddr"));
+        g_wait_for_present =
+            gdpa ? reinterpret_cast<PFN_vkWaitForPresentKHR>(gdpa(g_device, "vkWaitForPresentKHR")) : nullptr;
+        if (!g_wait_for_present)
+            g_present_wait = false, log("nvn/vk: frame trace: no vkWaitForPresentKHR, no display times");
+    }
 
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -366,7 +449,7 @@ bool make_swapchain() {
         overlay::release();
         fsr_release();
         fxaa_release();
-        p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
+        present_wait_forget(), p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
         g_swapchain = VK_NULL_HANDLE;
     }
     VkSurfaceCapabilitiesKHR caps{};
@@ -670,8 +753,10 @@ void gpu_submit(const std::vector<std::shared_ptr<CmdList>>& lists, std::shared_
     draw_end_rendering(g_cb);
     const FrameTimes f1 = frame_times();  // the first part's submit and ring waits are not replay time
     g_timing.submits++;
-    g_timing.replay_ns += plat::monotonic_ns() - t0 - (f1.encode_ns - f0.encode_ns) - (f1.fence_ns - f0.fence_ns);
-    g_timing.upload_bytes += async ? frame_upload_used() : g_upload_used;
+    const uint64_t replay_ns = plat::monotonic_ns() - t0 - (f1.encode_ns - f0.encode_ns) - (f1.fence_ns - f0.fence_ns);
+    const uint64_t upload_bytes = async ? frame_upload_used() : g_upload_used;
+    g_timing.replay_ns += replay_ns, g_timing.upload_bytes += upload_bytes;
+    ft::add(ft::kReplayNs, replay_ns), ft::add(ft::kUploadBytes, upload_bytes);  // frame trace (frametrace.h)
     gpu_profile_mark(g_cb, "end");
     if (async)  // the profile, zero-draw queries and snapshots read this submit's results right below: waited for
         frame_submit(VK_NULL_HANDLE, VK_NULL_HANDLE, draw_take_write_backs(),
@@ -732,7 +817,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         overlay::release();
         fsr_release();
         fxaa_release();
-        if (g_swapchain) p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
+        if (g_swapchain) present_wait_forget(), p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
         g_swapchain = VK_NULL_HANDLE;
         log("nvn/vk: new window: surface and swapchain re-made");
         if (!make_surface()) return;
@@ -744,14 +829,16 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         overlay::release();
         fsr_release();
         fxaa_release();
-        p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
+        present_wait_forget(), p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
         g_swapchain = VK_NULL_HANDLE;
         log("nvn/vk: VSync changed: swapchain re-made");
     }
     if (!g_swapchain && !make_swapchain()) return;
     uint32_t index = 0;
     VkSemaphore acquired = async_gpu() ? frame_acquire_semaphore() : g_acquired;
+    const uint64_t t_acquire = plat::monotonic_ns();
     VkResult r = p_vkAcquireNextImageKHR(g_device, g_swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE, &index);
+    const uint64_t acquire_ns = plat::monotonic_ns() - t_acquire;
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         make_swapchain();
         return;
@@ -829,7 +916,17 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
     pi.swapchainCount = 1;
     pi.pSwapchains = &g_swapchain;
     pi.pImageIndices = &index;
+    VkPresentIdKHR present_ids{VK_STRUCTURE_TYPE_PRESENT_ID_KHR};
+    uint64_t present_id = 0;
+    if (g_present_wait && !g_pw.failed)
+        present_id = ++g_pw.next_id, present_ids.swapchainCount = 1, present_ids.pPresentIds = &present_id,
+        pi.pNext = &present_ids;
+    const uint64_t t_present = plat::monotonic_ns();
     r = p_vkQueuePresentKHR(g_queue, &pi);
+    const uint64_t trace_frame =
+        ft::host_present(acquire_ns, plat::monotonic_ns() - t_present, frame_times().encode_ns, frame_times().fence_ns);
+    if (present_id && trace_frame != UINT64_MAX && (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR))
+        present_wait_push(present_id, trace_frame);
     plat::frame_presented();  // cores, CPU time, present intervals (frame_stats.cpp)
     // SUBOPTIMAL re-makes the swapchain only when the surface size changed: Android returns it for every present when
     // the swapchain's transform is not the display's (a Galaxy S23 did for Hades), a rebuild per frame.

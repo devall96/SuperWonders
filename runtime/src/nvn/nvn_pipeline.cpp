@@ -23,6 +23,7 @@
 #include "nvn_pipeline_async.h"
 #include "platform.h"
 #include "shadow_coord_debug_spv.h"
+#include "frametrace.h"
 
 namespace nx::nvn {
 
@@ -1081,7 +1082,7 @@ VkPipeline graphics_pipeline(const PipelineKey& draw_key, const ProgramLayout& l
     if (auto it = pending.find(k); it != pending.end()) {
         std::shared_ptr<AsyncPipeline> a = it->second;
         if (!a->ready()) {
-            if (may_skip) return g_pipelines_skipped++, VK_NULL_HANDLE;
+            if (may_skip) return g_pipelines_skipped++, ft::add(ft::kSkipped), VK_NULL_HANDLE;
             a->wait();
         }
         pending.erase(it);

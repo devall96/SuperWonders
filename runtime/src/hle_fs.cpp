@@ -23,6 +23,7 @@
 #include <nx/runtime.h>
 
 #include "platform.h"
+#include "frametrace.h"
 
 namespace fs = std::filesystem;
 
@@ -329,7 +330,9 @@ void GetFileSize(CPU& c) {  // (s64* out, FileHandle)
 uint64_t read_at(const File& file, int64_t off, uint64_t buf, uint64_t size) {
     uint64_t t0 = plat::monotonic_ns();
     uint64_t n = plat::read_at(file.f, off, reinterpret_cast<void*>(buf), size);
-    uint64_t ms = (plat::monotonic_ns() - t0) / 1'000'000;
+    const uint64_t read_ns = plat::monotonic_ns() - t0;
+    ft::add(ft::kFileReads), ft::add(ft::kFileBytes, n), ft::add(ft::kFileNs, read_ns);
+    uint64_t ms = read_ns / 1'000'000;
     if (g_trace) log("fs: read %s at %lld size %llu -> %llu", file.path.c_str(), (long long)off, (unsigned long long)size,
                      (unsigned long long)n);
     if (trace_fs() && file.path.find(".bwav") != std::string::npos) {  // streamed audio: is it being consumed?
