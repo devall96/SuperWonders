@@ -286,6 +286,12 @@ int frame_cap() {
         const char* e = std::getenv("NX_FPS_CAP");
         return e ? (std::atoi(e) == 30 ? 30 : 60) : 0;
     }();
+    // NX_FPS_CAP_UNTIL=<frame> (tests): 30 until that frame, then the setting, as a player switching back in the menu.
+    static const uint64_t until = [] {
+        const char* e = std::getenv("NX_FPS_CAP_UNTIL");
+        return e ? uint64_t(std::strtoull(e, nullptr, 10)) : uint64_t(0);
+    }();
+    if (until && g_frame.load(std::memory_order_relaxed) < until) return 30;
     return forced ? forced : g_frame_cap.load(std::memory_order_relaxed);
 }
 
@@ -308,12 +314,21 @@ void frame_time_probe(CPU& c) {
         if (ld<uint32_t>(c.x[19] + 0x264) > max) st<uint32_t>(c.x[19] + 0x264, max);
         if (int(c.x[1]) > int(max)) c.x[1] = max;
     }
-    if (frame_cap() == 30) {
+    static int applied_cap = 60;
+    const int cap = frame_cap();
+    if (cap == 30) {
         if (ld<uint32_t>(c.x[19] + 0x24c) < 2) st<uint32_t>(c.x[19] + 0x24c, 2);
         st<uint32_t>(c.x[19] + 0x264, 2);
         st<uint32_t>(c.x[19] + 0x268, 2);
         if (int(c.x[1]) < 2) c.x[1] = 2;
+    } else if (applied_cap == 30) {  // back to 60: release the game's interval (else it stays locked at 2)
+        st<uint32_t>(c.x[19] + 0x264, 1);
+        st<uint32_t>(c.x[19] + 0x268, 1);
+        if (game_max) st<uint32_t>(c.x[19] + 0x24c, game_max);
+        c.x[1] = 1;
+        log("nvn: frame cap back to 60: the game's interval released");
     }
+    applied_cap = cap;
     static uint64_t bins[5] = {}, frames = 0;
     double ms = double(ld<uint64_t>(c.x[19] + 0x118)) / 19200.0;
     // A main-thread frame over 33 ms: what it waited on (PHASE3.md I1), its CPU time, faults and switches since the
