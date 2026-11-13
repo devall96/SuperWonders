@@ -52,12 +52,20 @@ endif()
 # compiled when the game runs. glslc comes with the Vulkan SDK (the NDK's shader-tools on Android, shaderc on macOS).
 set(NX_SHADER_OUT "${CMAKE_BINARY_DIR}/shaders")
 file(GLOB NX_NDK_SHADER_TOOLS "${ANDROID_NDK}/shader-tools/*")
-find_program(NX_GLSLC glslc HINTS "${NX_VULKAN_SDK}/Bin" "${NX_VULKAN_SDK}/bin" ${NX_NDK_SHADER_TOOLS} REQUIRED)
+# glslc, else glslangValidator (Ubuntu 22.04, the AppImage's build container, has no glslc): both write the SPIR-V as a
+# list of words to #include (glslc's is optimized, glslangValidator's isn't; either is valid).
+find_program(NX_GLSLC glslc HINTS "${NX_VULKAN_SDK}/Bin" "${NX_VULKAN_SDK}/bin" ${NX_NDK_SHADER_TOOLS})
+if(NX_GLSLC)
+    set(NX_GLSL_ARGS -O --target-env=vulkan1.0 -mfmt=num -o)
+else()
+    find_program(NX_GLSLC glslangValidator HINTS "${NX_VULKAN_SDK}/Bin" "${NX_VULKAN_SDK}/bin" REQUIRED)
+    set(NX_GLSL_ARGS -V --target-env vulkan1.0 -x -o)
+endif()
 foreach(shader astc_decode.comp)
     set(out "${NX_SHADER_OUT}/${shader}.inc")
     add_custom_command(OUTPUT "${out}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${NX_SHADER_OUT}"
-        COMMAND "${NX_GLSLC}" -O --target-env=vulkan1.0 -mfmt=num -o "${out}" "${CMAKE_SOURCE_DIR}/runtime/shaders/${shader}"
+        COMMAND "${NX_GLSLC}" ${NX_GLSL_ARGS} "${out}" "${CMAKE_SOURCE_DIR}/runtime/shaders/${shader}"
         DEPENDS "${CMAKE_SOURCE_DIR}/runtime/shaders/${shader}"
         COMMENT "glslc ${shader}")
     list(APPEND NX_SHADER_SOURCES "${out}")
