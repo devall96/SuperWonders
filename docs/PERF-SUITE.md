@@ -63,9 +63,9 @@ headless surface offers present wait, but waiting crashes in the driver).
 (`tools/play/routes/course11.frames`, recorded on Ubuntu with `NX_INPUT_RECORD`, `docs/PLAY-TOOLS.md`) replayed per game
 frame through the menus, the world map and the course. The "play" report covers the player's first move (`@go`) to the
 goal (`tools/perf/game_window.py` maps the game frames onto the trace); `<run>.route.md` says where the player went and
-whether the goal was reached. The game is not fully deterministic, so a replay can leave the recorded path; if it dies,
-the probe bot finishes the course (`NX_PLAY_FALLBACK=bot`) and the run's line says so. `--route FILE` replays another
-recording.
+whether the goal was reached. The game is not fully deterministic, so a replay can leave the recorded path: a run that
+dies or misses the goal is marked **FAILED** (`<run>.FAILED` with the frame it died, and in the summary), never finished
+by a bot. `--route FILE` replays another recording.
 
 - `course11`: caches as they are; stops 3 s after the goal (at most 400 s).
 - `course11-cold`: no pipeline caches, as `cold` below (at most 460 s).
@@ -85,8 +85,9 @@ user, character, world map, course 1-1 to the right; the player mostly stands ne
 Each run gets a report of its "play" window (from 5 s after the first frame) and of the whole run, then a summary (the
 median over runs) and a baseline verdict. The player's save and `pc-settings.ini` are set aside and put back after
 every run (checked byte for byte), and the suite refuses to start while the game runs. `--display window` shows the
-game fullscreen on the desktop: the only way to see compositor and display timing, so ask first on a shared PC. On
-Windows (MSYS2 bash) the default is `NX_HEADLESS_PRESENT=1`; take the GPU lock as for any game run.
+game fullscreen on the desktop. **The default is `--display screen`** (2026-11-13, the user: tests on screen): a normal
+visible window with real presents, so compositor and display timing count. `--display offscreen` is the old hidden
+mode (Windows: `NX_HEADLESS_PRESENT=1`; Linux: SDL's offscreen driver). Take the GPU lock as for any game run.
 
 ## Rules
 

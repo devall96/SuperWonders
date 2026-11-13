@@ -2,15 +2,15 @@
 # perf_suite.sh: the frame-time performance suite (docs/PERF-SUITE.md). Runs scripted scenarios with NX_FRAMETRACE,
 # reports each run (tools/perf/frametrace_report.py) and writes a summary across runs, optionally gated on a baseline.
 #
-#   tools/perf/perf_suite.sh --out DIR [--runs 2] [--scenarios "warm cold"] [--display offscreen|window]
+#   tools/perf/perf_suite.sh --out DIR [--runs 2] [--scenarios "warm cold"] [--display screen|window|offscreen]
 #                            [--ini FILE] [--baseline DIR] [--exe PATH] [--data-root DIR] [--route FILE]
 #                            [--env VAR=VALUE ...]
 #
 # Scenarios that play course 1-1 for real (docs/PLAY-TOOLS.md): a recorded run replayed per game frame
 # (NX_INPUT_REPLAY, default tools/play/routes/course11.frames, --route to change), from the fixture save, through the
-# menus and the world map to the goal. If the replay dies (it can leave the recorded path: the game is not fully
-# deterministic), the probe bot takes over (NX_PLAY_FALLBACK=bot) so the run still reaches the goal; the report says so.
-# The "play" report covers the player's first move (@go) to the goal; the run stops 3 s after the goal.
+# menus and the world map to the goal. The game is not fully deterministic, so a replay can leave the recorded path:
+# a run that dies or misses the goal is marked FAILED (with the frame it died; <run>.route.md has the track), never
+# finished by a bot. The "play" report covers the player's first move (@go) to the goal; the run stops 3 s after it.
 #   course11       the caches as they are; at most 400 s
 #   course11-cold  no pipeline caches (as cold below); at most 460 s
 #
@@ -23,11 +23,12 @@
 #
 # Safety: refuses to run while a game is running; the player's save (user/save) and pc-settings.ini are moved aside
 # and put back after every run (checked byte for byte); --ini gives the run its own settings (else the defaults).
-# --display window shows the game on the desktop (real compositor timing); the default is offscreen (no window).
+# --display: screen (the default) a normal visible window on the desktop with real presents; window the same
+# fullscreen; offscreen no visible window (Windows: a hidden window that still presents; Linux: SDL's offscreen driver).
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-OUT=""; RUNS=2; SCEN="course11 course11-cold"; DISPLAY_MODE=offscreen; INI=""; BASE=""; EXE=""; W=""; EXTRA=()
+OUT=""; RUNS=2; SCEN="course11 course11-cold"; DISPLAY_MODE=screen; INI=""; BASE=""; EXE=""; W=""; EXTRA=()
 ROUTE=$ROOT/tools/play/routes/course11.frames
 while [ $# -gt 0 ]; do
     case $1 in
@@ -42,7 +43,7 @@ done
 W=${W:-$ROOT/private/wonder}
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WIN=1 ;; *) WIN=0 ;; esac
 EXE=${EXE:-$W/build/wonder$([ $WIN = 1 ] && echo .exe)}
-PY=${PYTHON:-python3}
+PY=${PYTHON:-$([ $WIN = 1 ] && echo python || echo python3)}
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 running() { if [ $WIN = 1 ]; then tasklist //FI "IMAGENAME eq wonder.exe" 2>/dev/null | grep -qi wonder.exe; else pgrep -x wonder >/dev/null; fi; }
 # Windows: the GPU is shared with other sessions through C:\SuperWonders-private\gpu.lock (taken for the whole suite,
@@ -98,7 +99,7 @@ run_one() {  # scenario run#
     case $sc in course11*)
         [ -f "$ROUTE" ] || { echo "no route $ROUTE"; return; }
         if [ $WIN = 1 ]; then rp=$(cygpath -w "$ROUTE"); pp=$(cygpath -w "$OUT/$tag.probe.csv"); else rp=$ROUTE; pp=$OUT/$tag.probe.csv; fi
-        EXTRA_RUN=(NX_INPUT_REPLAY="$rp" NX_PROBE="$pp" NX_PLAY_FALLBACK=bot) ;;
+        EXTRA_RUN=(NX_INPUT_REPLAY="$rp" NX_PROBE="$pp") ;;
     esac
     if [ $sc = cold ] || [ $sc = course11-cold ]; then
         mkdir -p "$KEEP/caches"; (cd "$W" && for p in $CACHES; do [ -e "$p" ] && mv "$p" "$KEEP/caches/"; done)
@@ -106,9 +107,10 @@ run_one() {  # scenario run#
     fi
     local disp=(SDL_VIDEO_DRIVER=offscreen)
     [ "$DISPLAY_MODE" = window ] && disp=(NX_FULLSCREEN=1)
+    [ "$DISPLAY_MODE" = screen ] && disp=()
     # Windows offscreen: a hidden window (NX_HEADLESS) that still presents (NX_HEADLESS_PRESENT), so the trace has
     # real presents and nothing shows on the desktop. The data root is given explicitly (the default is beside the exe).
-    [ $WIN = 1 ] && [ "$DISPLAY_MODE" != window ] && disp=(NX_HEADLESS=1 NX_HEADLESS_PRESENT=1)
+    [ $WIN = 1 ] && [ "$DISPLAY_MODE" = offscreen ] && disp=(NX_HEADLESS=1 NX_HEADLESS_PRESENT=1)
     [ $WIN = 1 ] && disp+=(NX_DATA_ROOT="$(cygpath -w "$W")")
     echo "== $tag ($secs s)"
     (cd "$ROOT" && env ${mesa:+$mesa} "${disp[@]}" NX_MUTE=1 NX_LOG="$OUT/$tag.log" NX_FRAMETRACE="$OUT/$tag.csv" \
@@ -127,7 +129,9 @@ run_one() {  # scenario run#
     done
     wait $game 2>/dev/null
     if [ ${#EXTRA_RUN[@]} -gt 0 ]; then
-        echo "   $(($(date +%s) - t0)) s$(grep -q 'play: event goal' "$OUT/$tag.log" && echo ', reached the goal' || echo ', NO GOAL')$(grep -q 'play: the replay died' "$OUT/$tag.log" && echo ' (the replay died; the bot finished)')"
+        local died=$(grep -o "play: event death at frame [0-9]*" "$OUT/$tag.log" | head -1 | grep -o "[0-9]*$")
+        if grep -q 'play: event goal' "$OUT/$tag.log"; then echo "   $(($(date +%s) - t0)) s, reached the goal"
+        else echo "   $(($(date +%s) - t0)) s, FAILED: no goal${died:+ (died at frame $died)}"; echo "FAILED${died:+ died at frame $died}" > "$OUT/$tag.FAILED"; fi
     fi
     if [ $sc = cold ] || [ $sc = course11-cold ]; then
         (cd "$W" && for p in $CACHES; do [ -e "$p" ] && rm -f "$p"; done); mv "$KEEP/caches"/* "$W/" 2>/dev/null; rmdir "$KEEP/caches"
@@ -167,6 +171,9 @@ def summary(d):
             res[sc]["causes"] = causes
     return res
 cur = summary(out)
+failed = sorted(os.path.basename(p)[:-7] + ": " + open(p).read().strip() for p in glob.glob(os.path.join(out, "*.FAILED")))
+if failed:
+    print("\nFAILED runs (the replay left the recorded path; their numbers do not cover the whole course): " + "; ".join(failed))
 json.dump(cur, open(os.path.join(out, "summary.json"), "w"), indent=1)
 print("\n## Suite summary (median of runs, play window)\n")
 print("| scenario | runs | avg fps | 1% low | 0.1% low | p99 ms | p99.9 ms | max ms | >33 | >50 | >100 | stutters/min | paced | hitch causes |")

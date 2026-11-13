@@ -4,7 +4,7 @@
 #
 #   tools/play/play_run.sh --out DIR [--route NAME|FILE] [--replay FILE] [--record FILE] [--frames "items"]
 #                          [--seconds N] [--dump N] [--exe PATH] [--data-root DIR] [--save DIR] [--cold]
-#                          [--display offscreen|window] [--env VAR=VALUE ...]
+#                          [--display screen|offscreen] [--env VAR=VALUE ...]
 #
 #   --route course11 | worldmap | FILE   a route file (tools/play/routes/<name>.frames): the menus and the play, keyed
 #                                        to game frames and anchors (NX_INPUT_FRAMES=@file)
@@ -26,7 +26,7 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 OUT=""; ROUTE=""; REPLAY=""; RECORD=""; FRAMES=""; SECS=""; DUMP=120; EXE=""; W=""; SAVE=""; COLD=0
-DISPLAY_MODE=offscreen; EXTRA=()
+DISPLAY_MODE=screen; EXTRA=()
 while [ $# -gt 0 ]; do
     case $1 in
     --out) OUT=$2; shift ;; --route) ROUTE=$2; shift ;; --replay) REPLAY=$2; shift ;; --record) RECORD=$2; shift ;;
@@ -85,9 +85,11 @@ if [ $COLD = 1 ]; then
     mkdir -p "$ASIDE"; (cd "$W" && for p in $CACHES; do [ -e "$p" ] && mv "$p" "$ASIDE/"; done)
     [ $WIN = 0 ] && mesa=MESA_SHADER_CACHE_DISABLE=true
 fi
-disp=(SDL_VIDEO_DRIVER=offscreen)
-[ "$DISPLAY_MODE" = window ] && disp=()
-[ $WIN = 1 ] && { [ "$DISPLAY_MODE" = window ] && disp=() || disp=(NX_HEADLESS=1 NX_HEADLESS_PRESENT=1); }
+# screen (the default): a normal visible window with real presents; offscreen: none (Windows: hidden but presenting).
+disp=()
+if [ "$DISPLAY_MODE" = offscreen ]; then
+    [ $WIN = 1 ] && disp=(NX_HEADLESS=1 NX_HEADLESS_PRESENT=1) || disp=(SDL_VIDEO_DRIVER=offscreen)
+fi
 P() { [ $WIN = 1 ] && cygpath -w "$1" || echo "$1"; }
 inp=()
 [ -n "$ROUTE_FILE" ] && inp+=(NX_INPUT_FRAMES="@$(P "$ROUTE_FILE")")

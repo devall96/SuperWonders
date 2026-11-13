@@ -55,13 +55,14 @@ Measured since (2026-11-13, segments starting at the first pad read after the ev
   2899 and 2901 frames after `@go` (the user's: 2899), at most 3.5 blocks apart mid-course and within 0.1 at the goal.
 - The user's take 1 (a turn while dashing at go+317) left the recorded path at go+332 in every replay, and two
   Windows replays left it differently, so this is the game (thread or actor timing; suspected, not proven), not Linux
-  vs Windows. Neither of those replays reached the goal. The perf suite therefore lets the bot finish a replay that
-  dies (`NX_PLAY_FALLBACK=bot`).
+  vs Windows. Neither of those replays reached the goal. The Linux session saw take 1 with its 2.5-minute title wait
+  trimmed match until go+398: time spent on the title may matter (a per-frame RNG?), so start recordings promptly.
+  Not hunted further yet.
 - `@go` fires when the player's x first changes, which in practice is the frame the course places the player (x leaves
   0.0): two replays saw x 20.71 and 20.94 there, about one frame of movement apart.
 
-`NX_PLAY_FALLBACK=bot`: when a replay dies, the bot plays the rest (the log and the probe's `mark` say
-`fallback_bot`).
+`NX_PLAY_FALLBACK=bot` (opt-in, not used by any script; only with the user's approval): when a replay dies, the bot
+plays the rest (the log and the probe's `mark` say `fallback_bot`).
 
 ## The probe: `NX_PROBE=<file.csv>`
 
@@ -90,5 +91,5 @@ fields (a jump shows y at `+0xc04`).
                            [--exe PATH] [--data-root DIR] [--save DIR] [--cold] [--env VAR=VALUE ...]
 
 Copies the fixture save into the data root (refuses the player's own `wonder-play`), takes `gpu.lock` on Windows, runs
-hidden, writes `nx.log`, `probe.csv`, `frames/*.png` and `report.md`, and stops 8 s after the goal or a `MARK:end`.
+in a visible window (`--display offscreen` for none), writes `nx.log`, `probe.csv`, `frames/*.png` and `report.md`, and stops 8 s after the goal or a `MARK:end`.
 `tools/play/routes/menus-course11.frames`: title to course 1-1 as Mario from the fixture save.
