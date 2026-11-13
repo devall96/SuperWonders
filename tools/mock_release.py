@@ -3,7 +3,8 @@
 
     mock_release.py --dir <folder> [--port 8765] [--repo test/superwonders] [--bad-digest NAME] [--log FILE]
 
-Every archive in <folder> named SuperWonders-v<version>-<Platform>-x64.<ext> becomes a release tagged v<version> (a
+Every file in <folder> named SuperWonders-v<version>-<Platform>-x64.<zip|tar.gz|AppImage> becomes a release tagged
+v<version> (a
 version with -alpha/-beta/-rc a pre-release), with GitHub's fields the updater reads: tag_name, html_url, draft,
 prerelease, and per asset name, size, browser_download_url and digest ("sha256:<hex>"). An <archive>.sig beside it is
 listed too. Serves:
@@ -22,7 +23,7 @@ import re
 import sys
 import time
 
-NAME = re.compile(r"^SuperWonders-v(\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?)-(Windows|Linux)-x64\.(zip|tar\.gz)$")
+NAME = re.compile(r"^SuperWonders-v(\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?)-(Windows|Linux)-x64\.(zip|tar\.gz|AppImage)$")
 
 
 def vkey(v):

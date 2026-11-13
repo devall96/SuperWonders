@@ -759,7 +759,8 @@ void run() {
     // Test hooks (documented here, as Savage Wind's are where they're defined):
     //   NX_LAUNCHER_TOUR=<n>   each page for n frames, then the settings menu over it, then quits (with
     //                          NX_DUMP_PRESENTED=1 NX_DUMP_PREP=<n>: the last frame of each to frames/9NNNNN.ppm)
-    //   NX_LAUNCHER_SETUP=1    starts Set up game files at once, with the folders in launcher.ini (then plays)
+    //   NX_LAUNCHER_SETUP=1    starts Set up game files at once, with the folders in launcher.ini (then plays, unless
+    //                          --config: the configuration screen stays, as after any setup there)
     const int tour = [] {
         const char* e = std::getenv("NX_LAUNCHER_TOUR");
         return e ? std::max(0, std::atoi(e)) : 0;
