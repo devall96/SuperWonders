@@ -67,7 +67,11 @@ whether the goal was reached. The game is not fully deterministic, so a replay c
 dies or misses the goal is marked **FAILED** (`<run>.FAILED` with the frame it died, and in the summary), never finished
 by a bot. `--route FILE` replays another recording.
 
-- `course11`: caches as they are; stops 3 s after the goal (at most 400 s).
+- `course11`: caches as they are; stops 12 s after the goal (at most 400 s; the trace is flushed every 600 rows and the
+  game is killed, so a shorter wait loses the last rows).
+
+Sound is on by default since 2026-11-13 (the user's live run stuttered more than muted replays); `--mute` for the old
+muted runs. Compare a run only with runs of the same sound setting.
 - `course11-cold`: no pipeline caches, as `cold` below (at most 460 s).
 
 Windows, RX 9070 XT, warm, offscreen, two replays (2026-11-13): both reached the goal in 2899 and 2901 frames after `@go`

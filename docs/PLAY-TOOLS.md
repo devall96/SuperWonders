@@ -91,5 +91,5 @@ fields (a jump shows y at `+0xc04`).
                            [--exe PATH] [--data-root DIR] [--save DIR] [--cold] [--env VAR=VALUE ...]
 
 Copies the fixture save into the data root (refuses the player's own `wonder-play`), takes `gpu.lock` on Windows, runs
-in a visible window (`--display offscreen` for none), writes `nx.log`, `probe.csv`, `frames/*.png` and `report.md`, and stops 8 s after the goal or a `MARK:end`.
+in a visible window (`--display offscreen` for none), writes `nx.log`, `probe.csv`, `frames/*.png` and `report.md`, and stops 12 s after the goal or a `MARK:end`. Sound is on unless `--mute`.
 `tools/play/routes/menus-course11.frames`: title to course 1-1 as Mario from the fixture save.

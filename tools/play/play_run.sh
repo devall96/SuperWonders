@@ -4,14 +4,15 @@
 #
 #   tools/play/play_run.sh --out DIR [--route NAME|FILE] [--replay FILE] [--record FILE] [--frames "items"]
 #                          [--seconds N] [--dump N] [--exe PATH] [--data-root DIR] [--save DIR] [--cold]
-#                          [--display screen|offscreen] [--env VAR=VALUE ...]
+#                          [--display screen|offscreen] [--mute] [--env VAR=VALUE ...]
 #
 #   --route course11 | worldmap | FILE   a route file (tools/play/routes/<name>.frames): the menus and the play, keyed
 #                                        to game frames and anchors (NX_INPUT_FRAMES=@file)
 #   --replay FILE / --record FILE        NX_INPUT_REPLAY / NX_INPUT_RECORD
 #   --frames "items"                     an inline script (NX_INPUT_FRAMES)
 #   --seconds N                          stop after N s (default: the route's "# seconds:" line, else 120); a run also
-#                                        stops 8 s after the probe saw the goal or the end of the route
+#                                        stops 12 s after the probe saw the goal or the end of the route
+#   --mute                               no sound (NX_MUTE=1); sound is on by default
 #   --dump N                             a frame every N game frames (NX_DUMP_FRAMES; default 120; 0 = none)
 #   --save DIR                           the save the run starts from (default <data root>/fixtures/save-course11)
 #   --cold                               no pipeline caches (moved aside and put back), Mesa's disk cache off
@@ -26,12 +27,12 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 OUT=""; ROUTE=""; REPLAY=""; RECORD=""; FRAMES=""; SECS=""; DUMP=120; EXE=""; W=""; SAVE=""; COLD=0
-DISPLAY_MODE=screen; EXTRA=()
+DISPLAY_MODE=screen; EXTRA=(); MUTE=()
 while [ $# -gt 0 ]; do
     case $1 in
     --out) OUT=$2; shift ;; --route) ROUTE=$2; shift ;; --replay) REPLAY=$2; shift ;; --record) RECORD=$2; shift ;;
     --frames) FRAMES=$2; shift ;; --seconds) SECS=$2; shift ;; --dump) DUMP=$2; shift ;; --exe) EXE=$2; shift ;;
-    --data-root) W=$2; shift ;; --save) SAVE=$2; shift ;; --cold) COLD=1 ;; --display) DISPLAY_MODE=$2; shift ;;
+    --data-root) W=$2; shift ;; --save) SAVE=$2; shift ;; --cold) COLD=1 ;; --display) DISPLAY_MODE=$2; shift ;; --mute) MUTE=(NX_MUTE=1) ;;
     --env) EXTRA+=("$2"); shift ;;
     *) echo "unknown option $1"; exit 2 ;;
     esac
@@ -100,16 +101,16 @@ inp=()
 
 echo "== play run: $(basename "$EXE") ${ROUTE:+route $ROUTE }${REPLAY:+replay $REPLAY }$SECS s -> $OUT"
 T0=$(date +%s)
-(cd "$W" && env ${mesa:+$mesa} "${disp[@]}" NX_DATA_ROOT="$(P "$W")" NX_MUTE=1 NX_MEM_LIMIT_GB=10 NX_LOG="$(P "$OUT/nx.log")" \
+(cd "$W" && env ${mesa:+$mesa} "${disp[@]}" "${MUTE[@]}" NX_DATA_ROOT="$(P "$W")" NX_MEM_LIMIT_GB=10 NX_LOG="$(P "$OUT/nx.log")" \
     NX_PROBE="$(P "$OUT/probe.csv")" "${inp[@]}" "${EXTRA[@]}" "$EXE" >"$OUT/stdout.txt" 2>&1) &
 GAME=$!
-# Stop at the time limit, or 8 s after the route is done (the probe's goal, or the log's "route end" mark).
+# Stop at the time limit, or 12 s after the route is done (the probe's goal, or the log's "route end" mark).
 while kill -0 $GAME 2>/dev/null; do
     sleep 2
     now=$(($(date +%s) - T0))
     if [ $now -ge "$SECS" ]; then echo "   time limit ($SECS s)"; break; fi
     if [ -f "$OUT/nx.log" ] && grep -q "play: mark end\|play: event goal" "$OUT/nx.log"; then
-        sleep 8; echo "   route done after $(($(date +%s) - T0)) s"; break
+        sleep 12; echo "   route done after $(($(date +%s) - T0)) s"; break
     fi
 done
 if kill -0 $GAME 2>/dev/null; then

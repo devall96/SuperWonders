@@ -4,13 +4,17 @@
 #
 #   tools/perf/perf_suite.sh --out DIR [--runs 2] [--scenarios "warm cold"] [--display screen|window|offscreen]
 #                            [--ini FILE] [--baseline DIR] [--exe PATH] [--data-root DIR] [--route FILE]
-#                            [--env VAR=VALUE ...]
+#                            [--mute] [--env VAR=VALUE ...]
+#
+# Sound is on by default (the user's live run stuttered more than muted replays: Linux, 75 vs 31-43 stutters/min);
+# --mute turns it off (NX_MUTE=1), as every run was before 2026-11-13.
 #
 # Scenarios that play course 1-1 for real (docs/PLAY-TOOLS.md): a recorded run replayed per game frame
 # (NX_INPUT_REPLAY, default tools/play/routes/course11.frames, --route to change), from the fixture save, through the
 # menus and the world map to the goal. The game is not fully deterministic, so a replay can leave the recorded path:
 # a run that dies or misses the goal is marked FAILED (with the frame it died; <run>.route.md has the track), never
-# finished by a bot. The "play" report covers the player's first move (@go) to the goal; the run stops 3 s after it.
+# finished by a bot. The "play" report covers the player's first move (@go) to the goal; the run stops 12 s after it
+# (the trace is flushed every 600 rows, and the game is killed).
 #   course11       the caches as they are; at most 400 s
 #   course11-cold  no pipeline caches (as cold below); at most 460 s
 #
@@ -29,12 +33,12 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 OUT=""; RUNS=2; SCEN="course11 course11-cold"; DISPLAY_MODE=screen; INI=""; BASE=""; EXE=""; W=""; EXTRA=()
-ROUTE=$ROOT/tools/play/routes/course11.frames
+ROUTE=$ROOT/tools/play/routes/course11.frames; MUTE=()
 while [ $# -gt 0 ]; do
     case $1 in
     --out) OUT=$2; shift ;; --runs) RUNS=$2; shift ;; --scenarios) SCEN=$2; shift ;;
     --display) DISPLAY_MODE=$2; shift ;; --ini) INI=$2; shift ;; --baseline) BASE=$2; shift ;;
-    --exe) EXE=$2; shift ;; --data-root) W=$2; shift ;; --env) EXTRA+=("$2"); shift ;; --route) ROUTE=$2; shift ;;
+    --exe) EXE=$2; shift ;; --data-root) W=$2; shift ;; --env) EXTRA+=("$2"); shift ;; --route) ROUTE=$2; shift ;; --mute) MUTE=(NX_MUTE=1) ;;
     *) echo "unknown option $1"; exit 2 ;;
     esac
     shift
@@ -113,14 +117,14 @@ run_one() {  # scenario run#
     [ $WIN = 1 ] && [ "$DISPLAY_MODE" = offscreen ] && disp=(NX_HEADLESS=1 NX_HEADLESS_PRESENT=1)
     [ $WIN = 1 ] && disp+=(NX_DATA_ROOT="$(cygpath -w "$W")")
     echo "== $tag ($secs s)"
-    (cd "$ROOT" && env ${mesa:+$mesa} "${disp[@]}" NX_MUTE=1 NX_LOG="$OUT/$tag.log" NX_FRAMETRACE="$OUT/$tag.csv" \
+    (cd "$ROOT" && env ${mesa:+$mesa} "${disp[@]}" "${MUTE[@]}" NX_LOG="$OUT/$tag.log" NX_FRAMETRACE="$OUT/$tag.csv" \
         NX_INPUT_SCRIPT="$input" "${EXTRA_RUN[@]}" "${EXTRA[@]}" timeout $secs "$EXE" >"$OUT/$tag.out" 2>&1) &
     local game=$! t0=$(date +%s)
-    # A course run ends 3 s after the goal.
+    # A course run ends 12 s after the goal (past the trace's next flush: it is flushed every 600 rows).
     while kill -0 $game 2>/dev/null; do
         sleep 2
         if [ ${#EXTRA_RUN[@]} -gt 0 ] && grep -q "play: event goal" "$OUT/$tag.log" 2>/dev/null; then
-            sleep 3
+            sleep 12
             if [ $WIN = 1 ]; then
                 for pid in $(tasklist //FI "IMAGENAME eq $(basename "$EXE")" //FO CSV //NH 2>/dev/null | cut -d, -f2 | tr -d '"'); do taskkill //F //PID "$pid" >/dev/null 2>&1; done
             else pkill -x "$(basename "$EXE")"; fi
@@ -131,7 +135,11 @@ run_one() {  # scenario run#
     if [ ${#EXTRA_RUN[@]} -gt 0 ]; then
         local died=$(grep -o "play: event death at frame [0-9]*" "$OUT/$tag.log" | head -1 | grep -o "[0-9]*$")
         if grep -q 'play: event goal' "$OUT/$tag.log"; then echo "   $(($(date +%s) - t0)) s, reached the goal"
-        else echo "   $(($(date +%s) - t0)) s, FAILED: no goal${died:+ (died at frame $died)}"; echo "FAILED${died:+ died at frame $died}" > "$OUT/$tag.FAILED"; fi
+        else
+            local why="no goal${died:+, died at frame $died}"
+            grep -q "^window closed" "$OUT/$tag.log" && why="no goal: the game window was closed (by hand?) before it"
+            echo "   $(($(date +%s) - t0)) s, FAILED: $why"; echo "FAILED: $why" > "$OUT/$tag.FAILED"
+        fi
     fi
     if [ $sc = cold ] || [ $sc = course11-cold ]; then
         (cd "$W" && for p in $CACHES; do [ -e "$p" ] && rm -f "$p"; done); mv "$KEEP/caches"/* "$W/" 2>/dev/null; rmdir "$KEEP/caches"
@@ -173,7 +181,7 @@ def summary(d):
 cur = summary(out)
 failed = sorted(os.path.basename(p)[:-7] + ": " + open(p).read().strip() for p in glob.glob(os.path.join(out, "*.FAILED")))
 if failed:
-    print("\nFAILED runs (the replay left the recorded path; their numbers do not cover the whole course): " + "; ".join(failed))
+    print("\nFAILED runs (their numbers do not cover the whole course): " + "; ".join(failed))
 json.dump(cur, open(os.path.join(out, "summary.json"), "w"), indent=1)
 print("\n## Suite summary (median of runs, play window)\n")
 print("| scenario | runs | avg fps | 1% low | 0.1% low | p99 ms | p99.9 ms | max ms | >33 | >50 | >100 | stutters/min | paced | hitch causes |")
