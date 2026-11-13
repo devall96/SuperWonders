@@ -74,7 +74,8 @@ echo "toolchain: $(du -sh "$T" | cut -f1) ($(ls "$T/lib" | grep -v clang | tr '\
 fetch https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.12.16+20261026-x86_64-unknown-linux-gnu-install_only.tar.gz \
       6a79e922e50006b601f29e688407659da1c2b86ebcd4e9c7254cf234be8b89de python-3.12.16.tar.gz
 rm -rf "$PYDIR" && mkdir -p "$PYDIR" && tar -xzf build/linux/src/python-3.12.16.tar.gz -C "$PYDIR" --strip-components=1
-"$PYDIR/bin/python3" -m pip install -q --no-warn-script-location capstone==5.0.9 lz4==4.4.5 zstandard==0.25.0 fonttools==4.68.0
+PYTHONDONTWRITEBYTECODE=1 "$PYDIR/bin/python3" -m pip install -q --no-warn-script-location --no-compile \
+    capstone==5.0.9 lz4==4.4.5 zstandard==0.25.0 fonttools==4.68.0
 rm -rf "$PYDIR/lib/python3.12/test" "$PYDIR/lib/python3.12/idlelib" "$PYDIR/lib/python3.12/tkinter" "$PYDIR/share"
 find "$PYDIR" -name __pycache__ -prune -exec rm -rf {} +
 # (no symbolic links in the release: the updater's file list moves files, python3 -> python3.12 becomes a copy)
@@ -92,6 +93,7 @@ rm -rf "$APPDIR" && mkdir -p "$APPDIR/usr" && cp -a "$L/release/SuperWonders" "$
 cp tools/linux/AppRun "$APPDIR/" && chmod +x "$APPDIR/AppRun"
 cp tools/linux/superwonders.desktop "$APPDIR/"
 cp assets/wonder_app.svg "$APPDIR/superwonders.svg" && ln -sf superwonders.svg "$APPDIR/.DirIcon"
+python3.12 tools/pack_release.py --check-only "$APPDIR"  # (the AppDir too: nothing of this PC or of the game)
 fetch https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage \
       ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 appimagetool-x86_64.AppImage
 fetch https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64 \

@@ -27,10 +27,12 @@ Linux: --linux-toolchain <dir with bin/clang++, lib/, sysroot/> and --linux-pyth
 clang++ and python3 are used (a developer's portable folder). The AppImage itself: tools/linux/package.sh.
 """
 import argparse
+import getpass
 import glob
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -133,7 +135,7 @@ def pack_kit(kit, a):
         site = a.site_packages or next(p for p in sys.path if p.endswith("site-packages"))
         pack_python(a.python, site, os.path.join(kit, "python"))
         py = os.path.join(kit, "python", "python.exe")
-    kit_id = subprocess.run([py, "-I", os.path.join(kit, "gamebuild.py"), "id"], capture_output=True, text=True,
+    kit_id = subprocess.run([py, "-I", "-B", os.path.join(kit, "gamebuild.py"), "id"], capture_output=True, text=True,
                             check=True).stdout.strip()
     with open(os.path.join(kit, "kit-id.txt"), "w", newline="\n") as f:
         f.write(kit_id + "\n")
@@ -191,6 +193,72 @@ def recomplauncher_json(version):
     }
 
 
+def drop_caches(folder):
+    """Python's bytecode caches: never shipped (a .pyc keeps the path it was compiled at; Python makes them again)."""
+    for base, dirs, files in os.walk(folder):
+        for d in [d for d in dirs if d == "__pycache__"]:
+            shutil.rmtree(os.path.join(base, d))
+            dirs.remove(d)
+        for f in files:
+            if f.endswith((".pyc", ".pyo")):
+                os.remove(os.path.join(base, f))
+
+
+# Files that may say "OneDrive" (Windows' own known-folder names, FOLDERID_OneDrive / SkyDrive): the toolchain's
+# Windows headers and import libraries, nothing else.
+ONEDRIVE_OK = re.compile(r"^game-build/toolchain/.*\.(h|a|def)$", re.I)
+GAME_FILE = re.compile(r"(^|/)(main|sdk|main\.npdm|rtld)$|\.(nso|nro|nca|nsp|xci|npdm|sarc|szs|bfres|bntx|zs|byml|msbt|blarc)$|"
+                       r"(^|/)(romfs|exefs)(/|$)", re.I)
+
+
+def privacy_check(folder):
+    """Fails the pack if anything in `folder` names the machine that packed it or holds the game. Looks at every
+    file's name and contents (UTF-8 and UTF-16, as programs keep paths in either): this PC's home folder and user
+    name, the private game data folder, OneDrive, an e-mail domain, and files that are, or come from, the game."""
+    home = os.path.expanduser("~")
+    user = os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser()
+    needles = {  # name -> the text
+        "home folder": home, "home folder (/)": home.replace("\\", "/"),
+        "SuperWonders-private": "SuperWonders-private", "OneDrive": "OneDrive",
+        "user folder": f"Users\\{user}", "user folder (/)": f"Users/{user}", "home (Linux)": f"/home/{user}/",
+    }
+    pats = []
+    for name, text in needles.items():
+        for enc in ("utf-8", "utf-16-le"):
+            pat = re.escape(text.encode(enc))
+            if name == "OneDrive":  # (not Windows' known-folder id FOLDERID_OneDrive, which every Windows program has)
+                pat = b"(?<!" + re.escape("FOLDERID_".encode(enc)) + b")" + pat
+            pats.append((name, re.compile(pat, re.I)))
+    problems = []
+    for base, dirs, files in os.walk(folder):
+        dirs.sort()
+        for f in sorted(files):
+            p = os.path.join(base, f)
+            rel = os.path.relpath(p, folder).replace(os.sep, "/")
+            if GAME_FILE.search(rel) and not rel.startswith(("game-build/toolchain/", "game-build/python/")):
+                problems.append(f"{rel}: looks like a game file")
+            if os.path.islink(p):
+                continue
+            with open(p, "rb") as fh:
+                data = fh.read()
+            for name, pat in pats:
+                if name == "OneDrive" and ONEDRIVE_OK.search(rel):
+                    continue
+                m = pat.search(data)
+                if m:
+                    at = data[max(0, m.start() - 40):m.end() + 40]
+                    problems.append(f"{rel}: contains {name} ({at!r})")
+                    break
+    if problems:
+        print("privacy check FAILED: this release must not ship:")
+        for line in problems[:60]:
+            print("  " + line)
+        if len(problems) > 60:
+            print(f"  ... and {len(problems) - 60} more")
+        raise SystemExit(1)
+    print(f"privacy check: {folder}: nothing of this PC or of the game")
+
+
 def write_manifest(folder, version):
     lines = ["superwonders-update-manifest 1", f"version {version}"]
     for base, dirs, files in os.walk(folder):
@@ -240,6 +308,10 @@ def main():
     ap.add_argument("--linux-toolchain", help="Linux: clang, lld and a sysroot for game-build/toolchain")
     ap.add_argument("--linux-python", help="Linux: a relocatable Python with the modules, for game-build/python")
     ap.add_argument("--no-archive", action="store_true")
+    if len(sys.argv) == 3 and sys.argv[1] == "--check-only":  # (any folder: the AppImage's AppDir, tools/linux/package.sh)
+        drop_caches(sys.argv[2])
+        privacy_check(sys.argv[2])
+        return 0
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     folder = os.path.join(out, TOP)
@@ -261,6 +333,8 @@ def main():
     with open(os.path.join(folder, "recomplauncher.json"), "w", newline="\n") as f:
         json.dump(recomplauncher_json(a.version), f, indent=2)
     kit_id = pack_kit(os.path.join(folder, "game-build"), a)
+    drop_caches(folder)
+    privacy_check(folder)
     n = write_manifest(folder, a.version)
     print(f"{folder}: {n} files, {size(folder) / 1e6:.0f} MB, version {a.version}, kit {kit_id}")
     if not a.no_archive:
