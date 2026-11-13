@@ -70,6 +70,17 @@ by a bot. `--route FILE` replays another recording.
 - `course11`: caches as they are; stops 12 s after the goal (at most 400 s; the trace is flushed every 600 rows and the
   game is killed, so a shorter wait loses the last rows).
 
+**Frame check (every course run).** A run can reach the goal and still draw garbage; the user saw severe corruption
+on screen in runs whose numbers looked fine, because nothing looked at the frames. Every course run now dumps five
+shots as shown in the window (`NX_PLAY_SHOTS`, `NX_DUMP_FSR=1`): `title` (title+20), `map` (map+150), `start` (go+30),
+`mid` (go+1450), `goal` (goal+90), into `<run>.frames/`, and `tools/play/frame_check.py` compares each with
+`--reference DIR` (default `<data root>/reference/course11/<shot>.png`) at the best camera shift, and on its own for
+black or magenta frames. A run that renders wrong, or misses a shot, is **FAILED** like one that misses the goal
+(`<run>.frames.md` has the scores). Make the reference once from a run whose shots a person has looked at
+(`frame_check.py --log <run>.log --frames <run>.frames --save-reference <data root>/reference/course11`); a shot without
+a reference is reported as unchecked. The thresholds (more than 12% of pixels off by 60+, or a mean difference over 30)
+are not calibrated on real runs yet: calibrate them on the first two good on-screen runs and one corrupted run.
+
 Sound is on by default since 2026-11-13 (the user's live run stuttered more than muted replays); `--mute` for the old
 muted runs. Compare a run only with runs of the same sound setting.
 - `course11-cold`: no pipeline caches, as `cold` below (at most 460 s).

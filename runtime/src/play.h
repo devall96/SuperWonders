@@ -15,6 +15,8 @@ namespace nx::play {
 void pad(plat::PadState& p);
 // nvn_queue: after each game present (g_frame was just counted). Samples the probe, fires anchors, runs scan steps.
 void frame();
+// nvn frame dumps: the name of a shot due now (NX_PLAY_SHOTS), once; nullptr otherwise. The presenting thread.
+const char* take_shot();
 // hle_fs: a guest file was opened (course and world names come from the files a scene loads).
 void file_opened(const std::string& guest_path);
 

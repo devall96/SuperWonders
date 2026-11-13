@@ -12,6 +12,7 @@
 
 #include "nvn_vk.h"
 #include "platform.h"
+#include "play.h"
 
 namespace nx::nvn {
 
@@ -230,6 +231,10 @@ uint32_t frame_dump_every() {
 // "<count> [<every>]", default 40 frames, every 2nd) dumps the next presented frames, then is deleted. The game runs
 // at full speed until then, for glitches that only show in a long session (DEBUG-2 #77). Checked once a second.
 bool frame_dump_due(uint64_t presents) {
+    if (const char* shot = play::take_shot()) {  // NX_PLAY_SHOTS (play.cpp)
+        log("play: shot %s in frames/%05llu.ppm", shot, (unsigned long long)presents);
+        return true;
+    }
     static uint64_t left = 0, every = 2, next_check = 0;
     if (presents >= next_check) {
         next_check = presents + 60;

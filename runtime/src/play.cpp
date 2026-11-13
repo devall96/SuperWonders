@@ -257,6 +257,20 @@ std::string g_marks;         // MARK items this frame
 enum Event { kEvTitle, kEvMap, kEvCourse, kEvGo, kEvGoal, kEvDeath, kEvCount };
 const char* kEventNames[kEvCount] = {"title", "map", "course", "go", "goal", "death"};
 int64_t g_event_frame[kEvCount] = {};
+int64_t g_event_first[kEvCount] = {};  // the first time each happened
+
+// Shots (NX_PLAY_SHOTS="<name>=<event>+<frames>,..."): the presented frame at that moment is dumped like
+// NX_DUMP_FRAMES (<data root>/frames/NNNNN.ppm; with NX_DUMP_FSR=1 after FXAA and FSR, as shown in the window) and
+// the log names it ("play: shot <name> in frames/NNNNN.ppm"). tools/play/frame_check.py compares the shots with
+// reference images: a run that renders wrong fails like one that misses the goal (tools/perf/perf_suite.sh).
+struct Shot {
+    std::string name;
+    int event = -1;
+    int64_t offset = 0;
+    bool done = false;
+};
+std::vector<Shot> g_shots;
+std::atomic<const char*> g_shot_pending{nullptr};
 std::string g_pending_events;  // fired since the last CSV row
 std::vector<int> g_rec_pending;  // events the recorder has not written yet
 std::string g_scene;   // "course" / "map" / "" from the files the game loads
@@ -314,7 +328,7 @@ Recorder g_rec;
 // Anything to do at all (otherwise the hooks return at once).
 bool active() {
     static const bool on = [] {
-        for (const char* k : {"NX_INPUT_FRAMES", "NX_INPUT_REPLAY", "NX_PROBE", "NX_PROBE_SCAN"})
+        for (const char* k : {"NX_INPUT_FRAMES", "NX_INPUT_REPLAY", "NX_PROBE", "NX_PROBE_SCAN", "NX_PLAY_SHOTS"})
             if (const char* e = std::getenv(k); e && *e) return true;
         const char* r = std::getenv("NX_INPUT_RECORD");
         return r && *r && std::strcmp(r, "1") != 0;
@@ -348,6 +362,20 @@ void init() {
     if (const char* e = std::getenv("NX_INPUT_RECORD"); e && *e && std::strcmp(e, "1") != 0) {
         g_rec.f = fopen_utf8(e, "w");
         if (g_rec.f) std::fprintf(g_rec.f, "# SuperWonders input recording: game frames (docs/PLAY-TOOLS.md)\n"), log("play: recording input to %s", e);
+    }
+    if (const char* e = std::getenv("NX_PLAY_SHOTS"); e && *e) {
+        for (const std::string& item : split(e, ',')) {
+            const size_t eq = item.find('='), plus = item.find('+');
+            Shot s;
+            s.name = trim(item.substr(0, eq));
+            const std::string ev = trim(item.substr(eq + 1, plus == std::string::npos ? std::string::npos : plus - eq - 1));
+            for (int k = 0; k < kEvCount; k++)
+                if (ev == kEventNames[k]) s.event = k;
+            if (plus != std::string::npos) s.offset = std::atoll(item.c_str() + plus + 1);
+            if (eq == std::string::npos || s.event < 0) log("play: cannot read shot '%s'", item.c_str());
+            else g_shots.push_back(s);
+        }
+        g_shots.reserve(g_shots.size());  // (the names are handed out by pointer: no reallocation after this)
     }
     if (const char* e = std::getenv("NX_PROBE"); e && *e) {
         g_csv = fopen_utf8(e, "w");
@@ -617,12 +645,17 @@ void scan_step(const Item& it) {
 void fire(Event e) {
     const int64_t fr = int64_t(g_frame.load());
     g_event_frame[e] = fr;
+    if (!g_event_first[e]) g_event_first[e] = fr;
     g_pending_events += std::string(g_pending_events.empty() ? "" : "|") + kEventNames[e];
     g_rec_pending.push_back(e);  // written by frame(), where the segment starts
     log("play: event %s at frame %lld (%s)", kEventNames[e], (long long)fr, g_course.c_str());
 }
 
 }  // namespace
+
+const char* take_shot() {
+    return g_shot_pending.exchange(nullptr);
+}
 
 void file_opened(const std::string& path) {
     if (!active()) return;
@@ -783,6 +816,15 @@ void frame() {
             g_seg_start = at;
             log("play: segment %zu (@%s) starts at frame %lld", g_seg, s.anchor.c_str(), (long long)at);
         }
+
+    // Shots: each once, from the first time its event happened.
+    if (!g_shot_pending.load())
+        for (Shot& s : g_shots)
+            if (!s.done && s.event >= 0 && g_event_first[s.event] && fr >= g_event_first[s.event] + s.offset) {
+                s.done = true;
+                g_shot_pending = s.name.c_str();
+                break;
+            }
 
     // Scanner and marker steps of the active segment, once, at their frame.
     if (g_script_on && g_seg < g_script.size()) {

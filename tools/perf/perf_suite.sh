@@ -17,6 +17,12 @@
 # (the trace is flushed every 600 rows, and the game is killed).
 #   course11       the caches as they are; at most 400 s
 #   course11-cold  no pipeline caches (as cold below); at most 460 s
+# Every course run also dumps five shots as shown in the window (NX_PLAY_SHOTS, NX_DUMP_FSR=1: the title, the world map,
+# the course start, mid-course, the goal) into <run>.frames/ and checks them (tools/play/frame_check.py) against
+# --reference DIR (default <data root>/reference/course11/<shot>.png): a run that renders wrong is FAILED like one that
+# misses the goal. Make the reference once from a run whose shots a person has looked at:
+#   tools/play/frame_check.py --log <run>.log --frames <run>.frames --save-reference <data root>/reference/course11
+# The check needs Pillow (PYTHON_PIL, default the private venv's python).
 #
 # The older scenarios (wall-clock input, course 1-1 played to the right; the player mostly stands near the start):
 #   warm   the caches as they are; 90 s
@@ -33,12 +39,13 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 OUT=""; RUNS=2; SCEN="course11 course11-cold"; DISPLAY_MODE=screen; INI=""; BASE=""; EXE=""; W=""; EXTRA=()
-ROUTE=$ROOT/tools/play/routes/course11.frames; MUTE=()
+ROUTE=$ROOT/tools/play/routes/course11.frames; MUTE=(); REF=""
+SHOTS="title=title+20,map=map+150,start=go+30,mid=go+1450,goal=goal+90"
 while [ $# -gt 0 ]; do
     case $1 in
     --out) OUT=$2; shift ;; --runs) RUNS=$2; shift ;; --scenarios) SCEN=$2; shift ;;
     --display) DISPLAY_MODE=$2; shift ;; --ini) INI=$2; shift ;; --baseline) BASE=$2; shift ;;
-    --exe) EXE=$2; shift ;; --data-root) W=$2; shift ;; --env) EXTRA+=("$2"); shift ;; --route) ROUTE=$2; shift ;; --mute) MUTE=(NX_MUTE=1) ;;
+    --exe) EXE=$2; shift ;; --data-root) W=$2; shift ;; --env) EXTRA+=("$2"); shift ;; --route) ROUTE=$2; shift ;; --mute) MUTE=(NX_MUTE=1) ;; --reference) REF=$2; shift ;;
     *) echo "unknown option $1"; exit 2 ;;
     esac
     shift
@@ -48,6 +55,9 @@ W=${W:-$ROOT/private/wonder}
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WIN=1 ;; *) WIN=0 ;; esac
 EXE=${EXE:-$W/build/wonder$([ $WIN = 1 ] && echo .exe)}
 PY=${PYTHON:-$([ $WIN = 1 ] && echo python || echo python3)}
+# Pillow for the frame check: the private venv's python where there is one.
+PYI=${PYTHON_PIL:-$( for c in /c/SuperWonders-private/venv/Scripts/python.exe "$ROOT/private/venv/bin/python" "$ROOT/private/venv/Scripts/python.exe"; do [ -x "$c" ] && { echo "$c"; break; }; done )}
+PYI=${PYI:-$PY}
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 running() { if [ $WIN = 1 ]; then tasklist //FI "IMAGENAME eq wonder.exe" 2>/dev/null | grep -qi wonder.exe; else pgrep -x wonder >/dev/null; fi; }
 # Windows: the GPU is shared with other sessions through C:\SuperWonders-private\gpu.lock (taken for the whole suite,
@@ -103,7 +113,8 @@ run_one() {  # scenario run#
     case $sc in course11*)
         [ -f "$ROUTE" ] || { echo "no route $ROUTE"; return; }
         if [ $WIN = 1 ]; then rp=$(cygpath -w "$ROUTE"); pp=$(cygpath -w "$OUT/$tag.probe.csv"); else rp=$ROUTE; pp=$OUT/$tag.probe.csv; fi
-        EXTRA_RUN=(NX_INPUT_REPLAY="$rp" NX_PROBE="$pp") ;;
+        EXTRA_RUN=(NX_INPUT_REPLAY="$rp" NX_PROBE="$pp" NX_PLAY_SHOTS="$SHOTS" NX_DUMP_FSR=1)
+        rm -rf "$W/frames" ;;
     esac
     if [ $sc = cold ] || [ $sc = course11-cold ]; then
         mkdir -p "$KEEP/caches"; (cd "$W" && for p in $CACHES; do [ -e "$p" ] && mv "$p" "$KEEP/caches/"; done)
@@ -140,6 +151,16 @@ run_one() {  # scenario run#
             grep -q "^window closed" "$OUT/$tag.log" && why="no goal: the game window was closed (by hand?) before it"
             echo "   $(($(date +%s) - t0)) s, FAILED: $why"; echo "FAILED: $why" > "$OUT/$tag.FAILED"
         fi
+        # Did it render right? The shots against the reference.
+        rm -rf "$OUT/$tag.frames"; [ -d "$W/frames" ] && mv "$W/frames" "$OUT/$tag.frames"
+        if "$PYI" "$ROOT/tools/play/frame_check.py" --log "$OUT/$tag.log" --frames "$OUT/$tag.frames" \
+            --reference "${REF:-$W/reference/course11}" --json "$OUT/$tag.frames.json" > "$OUT/$tag.frames.md" 2>&1; then
+            echo "   frame check: ok$(grep -q 'unchecked' "$OUT/$tag.frames.md" && echo ' (some shots have no reference yet: unchecked)')"
+        else
+            echo "   $(tail -1 "$OUT/$tag.frames.md") (see $tag.frames.md)"
+            echo "FAILED: renders wrong: $(tail -1 "$OUT/$tag.frames.md" | sed "s/^frame check: //")" >> "$OUT/$tag.FAILED"
+        fi
+        "$PYI" "$ROOT/tools/frames.py" png "$OUT/$tag.frames" "$OUT/$tag.frames" >/dev/null 2>&1 && rm -f "$OUT/$tag.frames"/*.ppm
     fi
     if [ $sc = cold ] || [ $sc = course11-cold ]; then
         (cd "$W" && for p in $CACHES; do [ -e "$p" ] && rm -f "$p"; done); mv "$KEEP/caches"/* "$W/" 2>/dev/null; rmdir "$KEEP/caches"

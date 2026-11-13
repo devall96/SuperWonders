@@ -64,6 +64,13 @@ Measured since (2026-11-13, segments starting at the first pad read after the ev
 `NX_PLAY_FALLBACK=bot` (opt-in, not used by any script; only with the user's approval): when a replay dies, the bot
 plays the rest (the log and the probe's `mark` say `fallback_bot`).
 
+## Shots and the frame check: `NX_PLAY_SHOTS`
+
+`NX_PLAY_SHOTS="<name>=<event>+<frames>,..."` (e.g. `start=go+30,goal=goal+90`) dumps the presented frame at those
+moments (from the first time each event happened) to `<data root>/frames/NNNNN.ppm` and logs
+`play: shot <name> in frames/NNNNN.ppm`; with `NX_DUMP_FSR=1` the dump is the image after FXAA and FSR, as shown in the
+window. `tools/play/frame_check.py` compares the shots with reference images (see `docs/PERF-SUITE.md`).
+
 ## The probe: `NX_PROBE=<file.csv>`
 
 One row per game frame: `frame, t_ms, seg, rel, pad_reads, buttons, lx, ly, scene, course, player, px, py, pz, vx, vy,
