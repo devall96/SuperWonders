@@ -54,6 +54,7 @@ cp -r "$W/user/save" "$KEEP/save"
 [ -e "$W/pc-settings.ini" ] && mv "$W/pc-settings.ini" "$KEEP/pc-settings.ini"
 CACHES='pipelines_*.bin pipeline_keys_*.bin shader_prepare_*.done'
 restore() {
+    [ -n "$LOCK" ] && rm -f "$LOCK"  # (trap restore EXIT replaces the lock trap above)
     rm -rf "$W/user/save"; cp -r "$KEEP/save" "$W/user/save"
     diff -r "$W/user/save" "$KEEP/save" >/dev/null && rm -rf "$KEEP/save" || echo "WARNING: save restore differs; kept in $KEEP/save"
     rm -f "$W/pc-settings.ini"; [ -e "$KEEP/pc-settings.ini" ] && mv "$KEEP/pc-settings.ini" "$W/pc-settings.ini"
