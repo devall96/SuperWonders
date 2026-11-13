@@ -7,15 +7,17 @@
 #include <string>
 
 #include <nx/game.h>
+#include <nx/gamelib.h>
 #include <nx/runtime.h>
 
 #include "kernel.h"
 #include "platform.h"
 
-extern const nx::ModuleInfo nx_module_main;
-extern const nx::ModuleInfo nx_module_sdk;
-
 namespace nx {
+
+// The recompiled modules: from the game code library, or linked in (nx/gamelib.h).
+static const ModuleInfo& main_module() { return *game_lib().main; }
+static const ModuleInfo& sdk_module() { return *game_lib().sdk; }
 
 uint64_t mrs(CPU& c, uint32_t sysreg) {
     switch (sysreg) {
@@ -108,14 +110,14 @@ static void rtld_mark(CPU&) {}
 // nnMain, as called by nn::init::Start: the constructors need the program's allocator, which nninitStartup has
 // set up by now, so they run here, right before the real nnMain.
 static void nn_main(CPU& c) {
-    init_module(c, nx_module_sdk);
-    init_module(c, nx_module_main);
+    init_module(c, sdk_module());
+    init_module(c, main_module());
     game::after_init();
     log("entering nnMain");
     uint64_t real = 0;
-    for (size_t k = 0; k < nx_module_main.symbol_count; k++)
-        if (!nx_module_main.symbols[k].imported && std::string(nx_module_main.symbols[k].name) == "nnMain")
-            real = nx_module_main.base + nx_module_main.symbols[k].value;
+    for (size_t k = 0; k < main_module().symbol_count; k++)
+        if (!main_module().symbols[k].imported && std::string(main_module().symbols[k].name) == "nnMain")
+            real = main_module().base + main_module().symbols[k].value;
     call(c, real);
 }
 
@@ -142,18 +144,18 @@ void boot() {
     if (plat::setting("trace") == "1") g_trace = true;
     memory_init();
     kernel_init();
-    const ModuleInfo* mods[] = {&nx_module_main, &nx_module_sdk};
+    const ModuleInfo* mods[] = {&main_module(), &sdk_module()};
     load_modules(mods, 2, plat::data_root() + "/analysis");
 
     uint64_t tdata = 0, tdata_end = 0;
-    if (tdata_range(nx_module_main, tdata, tdata_end) && tdata_end > tdata) {
+    if (tdata_range(main_module(), tdata, tdata_end) && tdata_end > tdata) {
         set_tls_template(tdata, tdata_end);
         log("main .tdata: %llu bytes", (unsigned long long)(tdata_end - tdata));
     }
     uint32_t main_thread = create_main_thread(16ull << 20);
     CPU& c = current_cpu();
     c.x[0] = main_thread;
-    c.x[1] = nx_module_main.base;
+    c.x[1] = main_module().base;
     // SDK 9: Start(thread, main base, init, fini). SDK 16 adds a first callback: rtld's sets a word to 1 (rtld+0x1330
     // in Wonder), before its init and fini that walk the module list.
     uint64_t start = find_symbol("_ZN2nn4init5StartEmmPFvvES2_");

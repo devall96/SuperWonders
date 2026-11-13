@@ -1130,7 +1130,17 @@ std::string host_where(uint64_t pc) {
     char path[MAX_PATH] = "?";
     GetModuleFileNameA(m, path, MAX_PATH);
     const char* name = std::max(std::strrchr(path, '\\'), std::strrchr(path, '/'));
-    std::snprintf(b, sizeof b, "%s+%llx", name ? name + 1 : path, (unsigned long long)(pc - uint64_t(m)));
+    name = name ? name + 1 : path;
+    uint64_t at = pc - uint64_t(m);
+#ifdef NX_GAMELIB_FILE
+    // The game code library (nx/gamelib.h) as the linker's VA too, for tools/symbolize.py and its own map.
+    if (_stricmp(name, NX_GAMELIB_FILE) == 0) {
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(m);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(reinterpret_cast<const char*>(m) + dos->e_lfanew);
+        at += nt->OptionalHeader.ImageBase;
+    }
+#endif
+    std::snprintf(b, sizeof b, "%s+%llx", name, (unsigned long long)at);
     return b;
 }
 
@@ -1170,11 +1180,7 @@ LONG WINAPI throw_tracer(EXCEPTION_POINTERS* e) {
     void* frames[24];
     USHORT n = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
     std::string s = "C++ throw, host stack:";
-    for (USHORT k = 0; k < n; k++) {
-        char b[32];
-        std::snprintf(b, sizeof b, " %llx", (unsigned long long)exe_va(frames[k]));
-        s += b;
-    }
+    for (USHORT k = 0; k < n; k++) s += " " + host_where(uint64_t(frames[k]));  // (the game code is in its own library)
     nx::log("%s", s.c_str());
     return EXCEPTION_CONTINUE_SEARCH;
 }
