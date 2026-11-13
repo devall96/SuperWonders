@@ -280,6 +280,18 @@ uint32_t governor_max(uint64_t now) {
 // this frame's calc and draw recording): 2 when it reaches 15.83 ms, locked after 3 slow frames, back to 1 after 15
 // fast ones (docs/nvn/DEBUG.md #43). From that call site (lr main+e16ac, x19 = the framework): a histogram of that
 // time every 600 frames, and NX_MAX_INTERVAL=1 clamps the game's own maximum to 1 (fields 0x24c/0x264/0x268).
+std::atomic<int> g_frame_cap{60};  // set_frame_cap: 60, or 30
+int frame_cap() {
+    static const int forced = [] {
+        const char* e = std::getenv("NX_FPS_CAP");
+        return e ? (std::atoi(e) == 30 ? 30 : 60) : 0;
+    }();
+    return forced ? forced : g_frame_cap.load(std::memory_order_relaxed);
+}
+
+// The 30 fps cap: the game's own interval set to 2 (fw[0x264], fw[0x268] and the value it presents with), the mode
+// its governor picks under load. The game then steps its logic two vsyncs per frame and keeps full speed; waiting
+// longer between presents alone would halve its speed (its step follows the interval it chose, not wall time).
 void frame_time_probe(CPU& c) {
     const LoadedModule* m = module_at(c.x[30]);
     if (!m || c.x[30] - m->base != 0xe16ac || !c.x[19]) return;
@@ -295,6 +307,12 @@ void frame_time_probe(CPU& c) {
         if (ld<uint32_t>(c.x[19] + 0x268) > max) st<uint32_t>(c.x[19] + 0x268, max);
         if (ld<uint32_t>(c.x[19] + 0x264) > max) st<uint32_t>(c.x[19] + 0x264, max);
         if (int(c.x[1]) > int(max)) c.x[1] = max;
+    }
+    if (frame_cap() == 30) {
+        if (ld<uint32_t>(c.x[19] + 0x24c) < 2) st<uint32_t>(c.x[19] + 0x24c, 2);
+        st<uint32_t>(c.x[19] + 0x264, 2);
+        st<uint32_t>(c.x[19] + 0x268, 2);
+        if (int(c.x[1]) < 2) c.x[1] = 2;
     }
     static uint64_t bins[5] = {}, frames = 0;
     double ms = double(ld<uint64_t>(c.x[19] + 0x118)) / 19200.0;
@@ -347,14 +365,7 @@ void WindowSetPresentInterval(CPU& c) {
 // display's blank where it can be), so frames reach the display on its refresh, not on a clock drifting against it.
 // A late frame does not wait for the next vsync. NX_NO_FRAME_LIMIT=1, or fast-forward held: unpaced (the game's
 // logic steps once per frame, so it runs as fast as the machine renders).
-std::atomic<int> g_frame_cap{60};  // set_frame_cap: 60, or 30 (at least two vsyncs per present)
-
 void pace_present(int interval) {
-    static const int forced_cap = [] {
-        const char* e = std::getenv("NX_FPS_CAP");
-        return e ? (std::atoi(e) == 30 ? 30 : 60) : 0;
-    }();
-    if ((forced_cap ? forced_cap : g_frame_cap.load(std::memory_order_relaxed)) == 30 && interval < 2) interval = 2;
     static const bool off = std::getenv("NX_NO_FRAME_LIMIT") != nullptr;
     static uint64_t next = 0;
     if (off || interval <= 0 || plat::fast_forward()) return;
