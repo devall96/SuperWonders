@@ -26,6 +26,7 @@
 #include <nx/runtime.h>
 
 #include "imgui.h"
+#include "launcher/test_pad.h"
 #include "launcher/updates.h"
 #include "nvn/nvn_vk.h"
 #include "overlay/option_rows.h"
@@ -303,41 +304,14 @@ private:
     }
 };
 
-// ---- mods: <data root>/mods/<name>/ (hle_fs.cpp mod_roots: name order, a leading '-' turns one off) ----
-struct Mod {
-    std::string name;  // without the '-'
-    bool on;
-};
-
-std::vector<Mod> list_mods() {
-    std::vector<Mod> out;
-    std::error_code ec;
-    for (auto& e : fs::directory_iterator(u8(plat::data_root()) / "mods", ec)) {
-        if (!e.is_directory()) continue;
-        std::string n = str(e.path().filename());
-        bool on = n.rfind('-', 0) != 0;
-        out.push_back({on ? n : n.substr(1), on});
-    }
-    std::sort(out.begin(), out.end(), [](const Mod& a, const Mod& b) { return a.name < b.name; });
-    return out;
-}
-
-bool set_mod(const Mod& m, bool on) {
-    const fs::path dir = u8(plat::data_root()) / "mods";
-    std::error_code ec;
-    fs::rename(dir / u8(m.on ? m.name : "-" + m.name), dir / u8(on ? m.name : "-" + m.name), ec);
-    return !ec;
-}
-
 // ---- the launcher's state (the screen runs on the presenting thread, run() on the game's) ----
-enum Page { PagePlay, PageFiles, PageSettings, PageMods, PageUpdates, PageQuit, kPages };
-const char* const kPageNames[kPages] = {"Play", "Game files", "Settings", "Mods", "Updates", "Quit"};
+enum Page { PagePlay, PageFiles, PageSettings, PageUpdates, PageQuit, kPages };
+const char* const kPageNames[kPages] = {"Play", "Game files", "Settings", "Updates", "Quit"};
 
 struct State {
     Kit kit;
     Config config;
     Status status;
-    std::vector<Mod> mods;
     std::atomic<int> page{PagePlay};
     std::atomic<bool> play{false}, quit{false};
     bool config_mode = false;
@@ -347,12 +321,23 @@ struct State {
     uint64_t shown_ns = 0;
     std::string note;  // a line under the status (an error of the folder picker, a finished setup...)
     bool demo_progress = false;  // NX_LAUNCHER_TOUR's last step: the setup card, not running anything
+    // The controller (Savage Wind's launcher: the page list and the page are two places the cursor can be; A or right
+    // goes into the page, B back to the list, L / R change the page, + plays). One request at a time, next frame.
+    bool focus_list = true;   // the cursor to the selected page's name
+    int follow_hold = 0;      // frames the page doesn't follow the cursor (L / R moved it; the cursor catches up)
+    bool in_list = true;      // where it is now
+    uint64_t pad_before = 0;  // the pad's buttons last frame (edges)
+    // The folder browser (a list a controller can walk; the system's picker needs a mouse): 0 closed, 1 for the
+    // ExeFS, 2 for the RomFS. "" as the folder: the drives (Windows) or / (elsewhere).
+    int browse = 0;
+    std::string browse_dir;
+    std::vector<std::string> browse_list;  // its subfolders, read when it changes
+    std::string browse_listed;
 };
 State* g = nullptr;
 
 void refresh_status() {
     g->status = check_status(g->kit);
-    g->mods = list_mods();
 }
 
 // A folder for a row's value, fitted to the room the row leaves beside its label (in pixels, at the current font and
@@ -475,26 +460,125 @@ void page_play() {
     rows::end();
 }
 
+// ---- the folder browser ----
+std::string home_folder() {
+    const char* h = std::getenv(
+#if defined(_WIN32)
+        "USERPROFILE"
+#else
+        "HOME"
+#endif
+    );
+    return h && *h ? h : "";
+}
+
+void browse_open(int which) {
+    const std::string& now = which == 1 ? g->config.exefs : g->config.romfs;
+    std::error_code ec;
+    std::string start = !now.empty() && fs::is_directory(u8(now), ec) ? str(u8(now).parent_path()) : home_folder();
+    g->browse = which, g->browse_dir = start, g->browse_listed = "\x01";
+    rows::focus_first();
+    log("launcher: folder browser for the %s, from %s", which == 1 ? "ExeFS" : "RomFS", start.c_str());
+}
+
+void browse_close() {
+    g->browse = 0;
+    rows::focus_first();
+}
+
+void browse_read() {
+    if (g->browse_listed == g->browse_dir) return;
+    g->browse_listed = g->browse_dir;
+    g->browse_list.clear();
+    if (g->browse_dir.empty()) {  // the top: the drives, or the root
+#if defined(_WIN32)
+        const DWORD drives = GetLogicalDrives();
+        for (int d = 0; d < 26; ++d)
+            if (drives & (1u << d)) g->browse_list.push_back(std::string(1, char('A' + d)) + ":/");
+#else
+        g->browse_list.push_back("/");
+#endif
+        return;
+    }
+    std::error_code ec;
+    for (auto it = fs::directory_iterator(u8(g->browse_dir), fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        std::error_code e2;
+        if (!it->is_directory(e2)) continue;
+        const std::string n = str(it->path().filename());
+        if (n.empty() || n[0] == '.' || n[0] == '$') continue;  // (hidden and system folders)
+        g->browse_list.push_back(n);
+        if (g->browse_list.size() >= 2000) break;
+    }
+    std::sort(g->browse_list.begin(), g->browse_list.end(), [](const std::string& a, const std::string& b) {
+        for (size_t i = 0; i < a.size() && i < b.size(); ++i) {
+            const int x = std::tolower(static_cast<unsigned char>(a[i])), y = std::tolower(static_cast<unsigned char>(b[i]));
+            if (x != y) return x < y;
+        }
+        return a.size() < b.size();
+    });
+}
+
+void page_browse() {
+    browse_read();
+    const bool exefs = g->browse == 1;
+    const std::string& dir = g->browse_dir;
+    rows::begin("##browse", ImGui::GetContentRegionAvail().y);
+    rows::section(exefs ? "Choose your ExeFS folder" : "Choose your RomFS folder");
+    const bool ok = exefs ? folder_has(dir, "main") && folder_has(dir, "sdk") : folder_has(dir, "Shader");
+    const std::string where = dir.empty() ? std::string("This PC") : fit_path(dir, "Use this folder");
+    const std::string use_desc = std::string(ok ? "Use this folder." : exefs ? "Not an ExeFS folder: it has no main and sdk."
+                                                                             : "Not a RomFS folder: it has no Shader folder.") +
+                                 (dir.empty() ? std::string() : "\n\n" + dir);
+    if (!ok) rows::disable_next();
+    if (rows::action("Use this folder", where.c_str(), use_desc.c_str(), true, ok)) {
+        (exefs ? g->config.exefs : g->config.romfs) = dir;
+        save_config(g->config);
+        log("launcher: %s folder %s", exefs ? "ExeFS" : "RomFS", dir.c_str());
+        browse_close();
+        rows::end();
+        return;
+    }
+    if (!dir.empty() && rows::action("Up one folder", "", "The folder above this one.", true)) {
+        const fs::path p = u8(dir);
+        g->browse_dir = p.has_parent_path() && p.parent_path() != p ? str(p.parent_path()) : "";
+        if (g->browse_dir == dir) g->browse_dir.clear();  // (a drive's root: up to the drives)
+        rows::focus_first();
+    }
+    if (rows::action("Home folder", "", "Your home folder.", true)) g->browse_dir = home_folder(), rows::focus_first();
+    rows::section(dir.empty() ? "Drives" : "Folders here");
+    if (g->browse_list.empty()) rows::action("(no folders here)", "", "This folder has no folders in it.", false);
+    std::string go;
+    for (const std::string& n : g->browse_list)
+        if (rows::action(n.c_str(), "", "Open this folder.", false)) go = n;
+    if (!go.empty()) {
+        g->browse_dir = dir.empty() ? go : str(u8(dir) / u8(go));
+        rows::focus_first();
+    }
+    rows::section("Other ways");
+    if (rows::action("The system's folder picker", "", "Choose the folder in the system's own window (a mouse helps).",
+                     true))
+        plat::pick_folder(exefs ? "Your ExeFS folder (main, sdk)" : "Your RomFS folder", dir, [exefs](std::string p) {
+            std::lock_guard lk(g->pick_lock);
+            (exefs ? g->picked_exefs : g->picked_romfs) = p;
+        });
+    if (rows::action("Cancel", "", "Back, without changing the folder (B).", true)) browse_close();
+    rows::end();
+}
+
 void page_files() {
+    if (g->browse) return page_browse();
     rows::begin("##files", ImGui::GetContentRegionAvail().y);
     rows::section("Your game files");
     const std::string exefs = g->config.exefs.empty() ? "Choose..." : fit_path(g->config.exefs, "ExeFS folder");
     const std::string exefs_desc =
         "The ExeFS folder of your own copy of the game (version 1.0.0). It holds main and sdk." +
         (g->config.exefs.empty() ? std::string() : "\n\nNow: " + g->config.exefs);
-    if (rows::action("ExeFS folder", exefs.c_str(), exefs_desc.c_str(), true))
-        plat::pick_folder("Your ExeFS folder (main, sdk)", g->config.exefs, [](std::string p) {
-            std::lock_guard lk(g->pick_lock);
-            g->picked_exefs = p;
-        });
+    if (rows::action("ExeFS folder", exefs.c_str(), exefs_desc.c_str(), true)) browse_open(1);
     const std::string romfs = g->config.romfs.empty() ? "Choose..." : fit_path(g->config.romfs, "RomFS folder");
     const std::string romfs_desc = "The RomFS folder of your own copy of the game." +
                                    (g->config.romfs.empty() ? std::string() : "\n\nNow: " + g->config.romfs);
-    if (rows::action("RomFS folder", romfs.c_str(), romfs_desc.c_str(), true))
-        plat::pick_folder("Your RomFS folder", g->config.romfs, [](std::string p) {
-            std::lock_guard lk(g->pick_lock);
-            g->picked_romfs = p;
-        });
+    if (rows::action("RomFS folder", romfs.c_str(), romfs_desc.c_str(), true)) browse_open(2);
     static const char* const kModes[] = {"Use it in place", "Copy it"};
     rows::choice("RomFS", &g->config.romfs_copy, kModes, 2, 1,
                  "Copy it: SuperWonders keeps its own copy (about 3.6 GB), so it keeps working if you move or delete "
@@ -526,28 +610,6 @@ void page_settings() {
     rows::end();
 }
 
-void page_mods() {
-    rows::begin("##mods", ImGui::GetContentRegionAvail().y);
-    rows::section("Mods");
-    if (g->mods.empty())
-        rows::action("No mods yet", "", "Put each mod in a folder of its own in the mods folder. A mod holds a romfs "
-                                        "folder (romfs/, or contents/<title id>/romfs/ as Switch mods come).",
-                     true);
-    for (Mod& m : g->mods) {
-        bool on = m.on;
-        if (rows::toggle(m.name.c_str(), &on, true,
-                         "Its files go over the game's. Mods load in name order; the first with a file wins. "
-                         "Applies the next time the game starts.") &&
-            set_mod(m, on))
-            m.on = on;
-    }
-    rows::section("Folder");
-    if (rows::action("Open the mods folder", "", "Add, remove or rename mods there.", true))
-        plat::open_folder(plat::data_root() + "/mods");
-    if (rows::action("Refresh", "", "Read the mods folder again.", true)) g->mods = list_mods();
-    rows::end();
-}
-
 void page_quit() {
     rows::begin("##quit", ImGui::GetContentRegionAvail().y);
     rows::section("Quit");
@@ -557,11 +619,13 @@ void page_quit() {
 
 void screen(float w, float h) {
     if (!g) return;
+    if (g->follow_hold > 0) g->follow_hold--;
     g_k = std::clamp(h / 1080.0f, 0.5f, 3.0f);
     const float k = g_k;
     const ui::Theme& th = ui::theme();
     {
         std::lock_guard lk(g->pick_lock);  // folders the picker returned
+        if (!g->picked_exefs.empty() || !g->picked_romfs.empty()) g->browse = 0;  // (the system's picker answered)
         if (!g->picked_exefs.empty()) g->config.exefs = g->picked_exefs, g->picked_exefs.clear(), save_config(g->config);
         if (!g->picked_romfs.empty()) g->config.romfs = g->picked_romfs, g->picked_romfs.clear(), save_config(g->config);
     }
@@ -586,7 +650,15 @@ void screen(float w, float h) {
     ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 0));
     ImGuiWindowFlags f = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_NoBringToFrontOnFocus;
-    if (!overlay::is_open() && ImGui::IsWindowAppearing()) ImGui::SetNextWindowFocus();
+    // The launcher has the controller whenever the settings menu is closed (it closes: back where it was).
+    static bool menu_was_open = false;
+    const bool menu_open = overlay::is_open();
+    if (!menu_open && (menu_was_open || !ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow))) ImGui::SetNextWindowFocus();
+    if (menu_was_open && !menu_open) {
+        if (g->in_list) g->focus_list = true;
+        else rows::focus_first();
+    }
+    menu_was_open = menu_open;
     ImGui::Begin("##launcher", nullptr, f);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float margin = 56 * k, nav_w = std::max(300 * k, w * 0.24f);
@@ -610,6 +682,7 @@ void screen(float w, float h) {
     const bool busy = g->job.running || g->demo_progress;
     ImGui::SetCursorPos({margin, top});
     ImGui::BeginGroup();
+    bool list_focused = false;
     for (int i = 0; i < kPages; ++i) {
         ImGui::PushID(i);
         const bool sel = g->page == i;
@@ -631,11 +704,20 @@ void screen(float w, float h) {
         for (char* c = label; *c; ++c) *c = char(std::toupper(static_cast<unsigned char>(*c)));
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(sel ? th.text : th.text_dim));
         ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));  // (in the middle of the highlight)
+        if (sel && g->focus_list && !menu_open) ImGui::SetKeyboardFocusHere(), g->focus_list = false;
         const bool clicked = ImGui::Selectable(label, sel, ImGuiSelectableFlags_None, {nav_w, row_h});
         ImGui::PopStyleVar();
-        if (clicked ||
-            (ImGui::IsItemFocused() && !sel && ImGui::GetIO().NavVisible)) {
-            if (i != g->page) g->page = i, log("launcher: page %s", kPageNames[i]);
+        const bool focused = ImGui::IsItemFocused();
+        list_focused |= focused;
+        if (focused && i != g->page && !g->follow_hold)  // (the page follows the cursor)
+            g->page = i, g->browse = 0, log("launcher: page %s", kPageNames[i]);
+        if (clicked) {  // A (or a click): into the page
+            if (i != g->page) g->page = i, g->browse = 0, log("launcher: page %s", kPageNames[i]);
+            rows::focus_first();
+        }
+        if (focused && !menu_open) {  // the cursor, always visible: an outline on the page's name
+            const ImVec2 b0 = ImGui::GetItemRectMin(), b1 = ImGui::GetItemRectMax();
+            dl->AddRect(b0, b1, ui::fade(th.accent, 0.9f), 10 * k, 0, 2.5f * k);
         }
         ImGui::PopStyleColor();
         ImGui::SetWindowFontScale(1.0f);
@@ -645,6 +727,7 @@ void screen(float w, float h) {
         ImGui::PopID();
     }
     ImGui::EndGroup();
+    g->in_list = list_focused;
 
     // the status, lower left
     {
@@ -668,7 +751,7 @@ void screen(float w, float h) {
     const float px = margin + nav_w + 48 * k, pw = w - px - margin, ph = h - top - margin - 70 * k;
     ImGui::SetCursorPos({px, top});
     if (busy || (g->job.result > 0 && !g->job.was_cancelled() && g->page == PageFiles)) {
-        ImGui::BeginChild("##job", {pw, ph}, ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
+        ImGui::BeginChild("##job", {pw, ph}, ImGuiChildFlags_NavFlattened);
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
         const float card_h = 300 * k;
         if (busy) {
@@ -698,12 +781,11 @@ void screen(float w, float h) {
         }
         ImGui::EndChild();
     } else {
-        ImGui::BeginChild("##page", {pw, ph}, ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
+        ImGui::BeginChild("##page", {pw, ph}, ImGuiChildFlags_NavFlattened);
         switch (g->page.load()) {
             case PagePlay: page_play(); break;
             case PageFiles: page_files(); break;
             case PageSettings: page_settings(); break;
-            case PageMods: page_mods(); break;
             case PageUpdates: page_updates(g_k); break;
             default: page_quit(); break;
         }
@@ -711,16 +793,32 @@ void screen(float w, float h) {
     }
 
     // the controls, along the bottom
-    const ui::Hint hints[] = {{"A", "Select"}, {"B", "Back"}, {"+", "Play"}};
-    ui::hints(dl, w * 0.5f, h - margin * 0.7f, 34 * k, hints, 3);
+    const ui::Hint hints[] = {{"A", "Select"}, {"B", "Back"}, {"L", ""}, {"R", "Pages"}, {"+", "Play"}};
+    ui::hints(dl, w * 0.5f, h - margin * 0.7f, 34 * k, hints, 5);
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
 
-    // the controller: B back to the page list (ImGui nav), + plays when ready (overlay::filter_pad fed it)
-    if (!overlay::is_open() && !busy && g->status.ready == Ready::Yes &&
-        (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) || ImGui::IsKeyPressed(ImGuiKey_F5, false)))
-        g->play = true;
+    // The controller, by the player's own bindings (the pad as the overlay saw it: NpadButton bits), and the keys.
+    const uint64_t pad = overlay::pad_buttons(), pressed = pad & ~g->pad_before;
+    g->pad_before = pad;
+    if (menu_open) return;
+    const bool right = ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, false) ||
+                       ImGui::IsKeyPressed(ImGuiKey_GamepadLStickRight, false) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, false);
+    const bool back = (pressed & plat::kB) || ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                      ImGui::IsKeyPressed(ImGuiKey_Backspace, false);
+    if (list_focused && right) rows::focus_first();  // right: into the page
+    else if (!list_focused && back) {                // B: the browser closes, else back to the page list
+        if (g->browse) browse_close();
+        else g->focus_list = true;
+    }
+    if (!busy && (pressed & (plat::kL | plat::kR))) {  // L / R: the page before / after
+        const int step = (pressed & plat::kR) ? 1 : kPages - 1;
+        g->page = (g->page + step) % kPages, g->browse = 0, g->focus_list = true, g->follow_hold = 3;
+        log("launcher: page %s", kPageNames[g->page.load()]);
+    }
+    if (!busy && g->status.ready == Ready::Yes && ((pressed & plat::kPlus) || ImGui::IsKeyPressed(ImGuiKey_F5, false)))
+        g->play = true;  // +: play
 }
 
 bool wanted(const std::vector<std::string>& args, bool& config_mode) {
@@ -772,8 +870,10 @@ void run() {
              folder_has(g->config.romfs, "Shader"))
         g->page = PageFiles, start_setup();
     uint64_t frames = 0;
+    test_pad_start();  // (NX_TEST_PAD: a scripted controller, launcher/test_pad.h)
     for (;;) {
         const uint64_t t0 = plat::monotonic_ns();
+        test_pad_frame(frames);
         plat::PadState pad;
         plat::read_pad(pad);  // (feeds the overlay's controller navigation: overlay::filter_pad)
         if (tour) {

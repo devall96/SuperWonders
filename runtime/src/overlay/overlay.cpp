@@ -285,6 +285,7 @@ void set_screen(ScreenFn fn) {
     g_input_frames = 30;
 }
 bool screen_shown() { return g_screen.load() != nullptr; }
+uint64_t pad_buttons() { return g_pad_buttons.load(); }
 
 void filter_pad(plat::PadState& p) {
     if (!enabled()) return;

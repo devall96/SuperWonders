@@ -130,7 +130,7 @@ void begin(const char* id, float height) {
     g_desc_hover.clear(), g_desc_focus.clear(), g_desc_first.clear(), g_note.clear();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     ImGui::PushID(id);
-    ImGui::BeginChild("##rows", ImVec2(avail.x * 0.54f, avail.y), ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
+    ImGui::BeginChild("##rows", ImVec2(avail.x * 0.54f, avail.y), ImGuiChildFlags_NavFlattened);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 5 * g_k));  // (rows close)
 }
 

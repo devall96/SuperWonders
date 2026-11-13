@@ -51,6 +51,7 @@ bool is_open();
 using ScreenFn = void (*)(float w, float h);
 void set_screen(ScreenFn fn);
 bool screen_shown();
+uint64_t pad_buttons();  // the player's pad as the overlay last saw it (NpadButton bits, through the bindings)
 bool wants_mouse();     // the pointer is over the menu or the menu is open
 bool wants_keyboard();  // keys go to the menu, not the game
 // Called from plat::read_pad with the player's pad: navigates the menu with a controller, toggles it with

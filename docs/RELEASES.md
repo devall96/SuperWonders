@@ -18,6 +18,16 @@ release's file by them. The version is `VERSION`; a version with `-alpha.N`, `-b
 offered only to players already on one. Every pack runs a privacy check and stops if a file names the machine that
 packed it or holds anything of the game (below).
 
+## Where a player's files are, and mods
+
+Saves, settings (`pc-settings.ini`), the launcher's folders (`launcher.ini`), the log and the game set up from the
+player's files are in the data folder: `data/` next to the program on Windows (and in a portable Linux folder),
+`$XDG_DATA_HOME/superwonders` (`~/.local/share/superwonders`) for the AppImage. The launcher's Game files page opens it.
+
+**Mods** go in its `mods/` folder, one folder each, holding a `romfs` folder (`mods/<name>/romfs/`, or the layout
+Switch mods come in, `mods/<name>/contents/<title id>/romfs/`). Their files go over the game's at start: in name order,
+the first mod with a file wins, and a folder whose name starts with `-` is off (`runtime/src/hle_fs.cpp`).
+
 ## What SuperWonders Update checks
 
 It looks at the GitHub releases of the repository in the release's `update.ini` (`repo=owner/name`; empty, the
