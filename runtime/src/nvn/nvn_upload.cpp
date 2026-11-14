@@ -58,25 +58,42 @@ bool copies_fit(const Texture& t, const VkBufferImageCopy* r, uint32_t n, uint64
     return false;
 }
 
-// ASTC on a GPU without it (nvn_format.cpp): the untiled blocks of every level become RGBA8 texels, and the levels
-// are re-laid out for them (each level's layers back to back, 16-byte aligned). Logged every 200 textures: count,
+// The RGBA8 layout of decoded ASTC levels: each level's layers back to back, 16-byte aligned. `total`: its size.
+std::vector<LinearLevel> rgba_levels(const std::vector<LinearLevel>& levels, uint32_t layers, uint64_t& total) {
+    std::vector<LinearLevel> out = levels;
+    total = 0;
+    for (LinearLevel& l : out) {
+        l.offset = total;
+        l.layer_size = uint64_t(l.width) * l.height * 4;
+        l.width_blocks = l.width, l.height_blocks = l.height;
+        total += (l.layer_size * layers + 15) & ~15ull;
+    }
+    return out;
+}
+
+// Whether the untiled blocks hold what the decoder reads of level `l`, which can exceed layer_size when the level's
+// block counts disagree with it. Logged when not: the level is left black.
+bool astc_level_fits(const LinearLevel& l, uint32_t layers, uint32_t bw, uint32_t bh, uint64_t untiled) {
+    const uint64_t need = uint64_t((l.width + bw - 1) / bw) * ((l.height + bh - 1) / bh) * 16 * layers;
+    if (l.offset + std::max(need, l.layer_size * layers) <= untiled) return true;
+    log("nvn/vk: ASTC level %ux%u x%u: %llu bytes needed, %llu untiled: left black", l.width, l.height, layers,
+        (unsigned long long)need, (unsigned long long)(untiled - l.offset));
+    return false;
+}
+
+// ASTC on a GPU without it (nvn_format.cpp), on the CPU (NX_ASTC_CPU=1, or without the compute pipeline): the
+// untiled blocks of every level become RGBA8 texels, laid out by rgba_levels. Logged every 200 textures: count,
 // bytes and CPU time, the cost of the decoder at load.
 void decode_astc(uint32_t format, std::vector<uint8_t>& linear, std::vector<LinearLevel>& levels, uint32_t layers,
                  uint32_t bw, uint32_t bh) {
     static uint64_t textures = 0, bytes = 0, ns = 0, invalid = 0;
     const uint64_t t0 = plat::monotonic_ns();
     const bool srgb = format >= 0x87;
-    std::vector<LinearLevel> out = levels;
     uint64_t at = 0;
-    for (LinearLevel& l : out) {
-        l.offset = at;
-        l.layer_size = uint64_t(l.width) * l.height * 4;
-        l.width_blocks = l.width, l.height_blocks = l.height;
-        at += (l.layer_size * layers + 15) & ~15ull;
-    }
+    std::vector<LinearLevel> out = rgba_levels(levels, layers, at);
     std::vector<uint8_t> rgba(at);
     for (size_t k = 0; k < levels.size(); k++)
-        if (levels[k].offset + levels[k].layer_size * layers <= linear.size())
+        if (astc_level_fits(levels[k], layers, bw, bh, linear.size()))
             invalid += astc_decode_image(linear.data() + levels[k].offset, levels[k].width, levels[k].height, layers,
                                          bw, bh, srgb, rgba.data() + out[k].offset);
     linear.swap(rgba);
@@ -173,6 +190,120 @@ bool staging_wanted(uint64_t size) {
     }();
     uint64_t ring = frame_ring_size();
     return always || !ring || frame_upload_used() + size > ring / 4 || size > ring / 8;
+}
+
+// Staging memory for `size` bytes of a texture: 1 MB and up a buffer of its own (staging_wanted), so a scene load
+// cannot wrap the ring over itself (DEBUG-2 #72); NX_STAGING_RING=1: through the ring, as before (bisecting).
+Upload texture_staging(uint64_t size) {
+    static const bool ring = std::getenv("NX_STAGING_RING") != nullptr;
+    if (size >= (1u << 20) && !ring && staging_wanted(size)) return staging_alloc(size);
+    return upload_alloc(size, 16);
+}
+
+// glslc of runtime/shaders/astc_decode.comp, compiled by the build (CMakeLists.txt).
+const uint32_t kAstcDecode[] = {
+#include "astc_decode.comp.inc"
+};
+
+struct AstcPush {
+    uint32_t width, height, slices, bw, bh, srgb, in_word, out_word;
+};
+
+struct AstcPipeline {
+    VkDescriptorSetLayout set = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+};
+
+// Made on first use; null if the device refused it (ASTC is then decoded on the CPU).
+const AstcPipeline* astc_pipeline() {
+    static AstcPipeline p;
+    static bool made = false;
+    if (made) return p.pipeline ? &p : nullptr;
+    made = true;
+    VkDevice d = vk_device();
+    VkDescriptorSetLayoutBinding b[2] = {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                                         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+    VkDescriptorSetLayoutCreateInfo sci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    sci.bindingCount = 2, sci.pBindings = b;
+    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(AstcPush)};
+    VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    lci.setLayoutCount = 1, lci.pSetLayouts = &p.set, lci.pushConstantRangeCount = 1, lci.pPushConstantRanges = &push;
+    VkShaderModuleCreateInfo mci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    mci.codeSize = sizeof kAstcDecode, mci.pCode = kAstcDecode;
+    VkShaderModule module = VK_NULL_HANDLE;
+    if (p_vkCreateDescriptorSetLayout(d, &sci, nullptr, &p.set) != VK_SUCCESS ||
+        p_vkCreatePipelineLayout(d, &lci, nullptr, &p.layout) != VK_SUCCESS ||
+        p_vkCreateShaderModule(d, &mci, nullptr, &module) != VK_SUCCESS) {
+        log("nvn/vk: ASTC decode shader rejected: decoded on the CPU");
+        return nullptr;
+    }
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main"};
+    ci.layout = p.layout;
+    if (p_vkCreateComputePipelines(d, pipeline_cache(), 1, &ci, nullptr, &p.pipeline) != VK_SUCCESS) {
+        log("nvn/vk: ASTC decode pipeline failed: decoded on the CPU");
+        p.pipeline = VK_NULL_HANDLE;
+    }
+    p_vkDestroyShaderModule(d, module, nullptr);
+    return p.pipeline ? &p : nullptr;
+}
+
+// decode_astc on the GPU: the blocks are staged as they are and a dispatch per level (a thread per texel) writes the
+// RGBA8 texels into `u` (`size` bytes, laid out by rgba_levels), which the copies then read as they read the CPU's.
+// Recorded on cb, outside render passes. False when there is no pipeline or NX_ASTC_CPU=1 (decode_astc then).
+bool decode_astc_gpu(VkCommandBuffer cb, uint32_t format, const std::vector<uint8_t>& linear,
+                     std::vector<LinearLevel>& levels, uint32_t layers, uint32_t bw, uint32_t bh, Upload& u,
+                     uint64_t& size) {
+    static const bool cpu = [] {  // NX_ASTC_CPU=1: the CPU decoder; unset or 0: the GPU one
+        const char* e = std::getenv("NX_ASTC_CPU");
+        return e && e[0] && e[0] != '0';
+    }();
+    static uint64_t textures = 0, bytes = 0, ns = 0;
+    const AstcPipeline* p = cpu ? nullptr : astc_pipeline();
+    if (!p) return false;
+    const uint64_t t0 = plat::monotonic_ns();
+    std::vector<LinearLevel> out = rgba_levels(levels, layers, size);
+    Upload in = texture_staging(linear.size());
+    std::memcpy(in.ptr, linear.data(), linear.size());
+    u = texture_staging(size);
+    // Bound from an offset the device accepts (minStorageBufferOffsetAlignment is at most 256); the rest goes in the
+    // push constants, in words (every offset here is a multiple of 16).
+    const uint64_t in_base = in.offset & ~255ull, out_base = u.offset & ~255ull;
+    VkDescriptorSet set = descriptor_set(p->set);
+    VkDescriptorBufferInfo bi[2] = {{in.buffer, in_base, in.offset - in_base + linear.size()},
+                                    {u.buffer, out_base, u.offset - out_base + size}};
+    VkWriteDescriptorSet w[2] = {};
+    for (uint32_t k = 0; k < 2; k++) {
+        w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[k].dstSet = set, w[k].dstBinding = k, w[k].descriptorCount = 1;
+        w[k].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, w[k].pBufferInfo = &bi[k];
+    }
+    p_vkUpdateDescriptorSets(vk_device(), 2, w, 0, nullptr);
+    p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->pipeline);
+    p_vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->layout, 0, 1, &set, 0, nullptr);
+    for (size_t k = 0; k < levels.size(); k++) {
+        if (!astc_level_fits(levels[k], layers, bw, bh, linear.size())) {
+            std::memset(u.ptr + out[k].offset, 0, out[k].layer_size * layers);
+            continue;
+        }
+        AstcPush pc{levels[k].width, levels[k].height, layers, bw, bh, format >= 0x87,
+                    uint32_t((in.offset - in_base + levels[k].offset) / 4), uint32_t((u.offset - out_base + out[k].offset) / 4)};
+        p_vkCmdPushConstants(cb, p->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+        p_vkCmdDispatch(cb, (levels[k].width + 7) / 8, (levels[k].height + 7) / 8, layers);
+    }
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0,
+                           nullptr, 0, nullptr);
+    levels.swap(out);
+    const uint64_t spent = plat::monotonic_ns() - t0;
+    note_astc_decoded(spent);  // per timing window (nvn_pipeline_cache.cpp): now only the staging and recording
+    bytes += size, ns += spent;
+    if (++textures % 200 == 1)
+        log("nvn/vk: ASTC decoded on the GPU: %llu textures, %.1f MB, %.1f ms to stage and record",
+            (unsigned long long)textures, double(bytes) / 1e6, double(ns) / 1e6);
+    return true;
 }
 
 }  // namespace
@@ -299,31 +430,35 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img) {
                                  copies.data());
         return;
     }
+    Upload u;
+    uint64_t staged = 0;
+    bool gpu_decoded = false;  // the texels are in u already
     if (astc_decoded(t.format)) {  // RGBA8 texels from here on
-        decode_astc(t.format, linear, levels, layers, bw, bh);
         if (img.format == VK_FORMAT_BC3_UNORM_BLOCK || img.format == VK_FORMAT_BC3_SRGB_BLOCK) {
+            // Low-VRAM profile: BC3 is encoded from the CPU decode (the GPU decoder writes RGBA8 only).
+            decode_astc(t.format, linear, levels, layers, bw, bh);
             transcode_astc_to_bc3(linear, levels, layers);
             bw = bh = 4, bytes = host_bytes = 16;
             static uint64_t bc3_textures = 0;
             if (++bc3_textures == 1 || bc3_textures % 500 == 0)
                 log("nvn/vk: ASTC textures transcoded to BC3 for low-VRAM profile: %llu", (unsigned long long)bc3_textures);
         } else {
+            gpu_decoded = decode_astc_gpu(cb, t.format, linear, levels, layers, bw, bh, u, staged);
+            if (!gpu_decoded) decode_astc(t.format, linear, levels, layers, bw, bh);
             bw = bh = 1, bytes = host_bytes = 4;
         }
     }
     // Widened, every offset in the linear buffer doubles (level offsets are multiples of the 4-byte texel).
     uint64_t scale = widen ? 2 : 1;
-    Upload u;
-    if (widen) {
+    if (gpu_decoded) {
+    } else if (widen) {
         u = upload_alloc(linear.size() * 2, 16);
         widen_r11g11b10(linear.data(), u.ptr, linear.size() / 4);
-    } else if (linear.size() >= (1u << 20) && !std::getenv("NX_STAGING_RING") && staging_wanted(linear.size())) {
-        // 1 MB and up: a staging buffer of its own, so a scene load cannot wrap the ring over itself (DEBUG-2 #72).
-        // NX_STAGING_RING=1: through the ring, as before (bisecting).
-        u = staging_alloc(linear.size());
-        std::memcpy(u.ptr, linear.data(), linear.size());
+        staged = linear.size();
     } else {
-        u = upload(linear.data(), linear.size(), 16);
+        u = texture_staging(linear.size());
+        std::memcpy(u.ptr, linear.data(), linear.size());
+        staged = linear.size();
     }
     for (uint32_t k = 0; k < levels.size(); k++) {
         VkBufferImageCopy r{};
@@ -332,7 +467,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img) {
         r.imageExtent = {levels[k].width, levels[k].height, img.view_type == VK_IMAGE_VIEW_TYPE_3D ? layers : 1u};
         copies.push_back(r);
     }
-    if (!copies_fit(t, copies.data(), uint32_t(copies.size()), u.offset, linear.size() * scale, bw, bh, host_bytes))
+    if (!copies_fit(t, copies.data(), uint32_t(copies.size()), u.offset, staged * scale, bw, bh, host_bytes))
         return clear_image(cb, img);
     transition(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     p_vkCmdCopyBufferToImage(cb, u.buffer, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(copies.size()),
