@@ -2,8 +2,8 @@
 // fixed times after the first pad read, e.g. "70:A:0.2;74:A:0.2;80:RIGHT:5" (buttons: A B X Y L R ZL ZR PLUS MINUS
 // LEFT RIGHT UP DOWN; the directions also push the left stick). Added on top of the real pad and keyboard.
 //
-// NX_INPUT_RECORD=1 (or a file path): what the player does is written in that same format, to
-// <data root>/input_record.txt: every press of a button, and the stick past half way as a direction, from the first
+// NX_INPUT_RECORD=1: what the player does is written in that same format, to <data root>/input_record.txt
+// (a path instead is the frame recorder's, play.cpp): every press of a button, and the stick past half way as a direction, from the first
 // pad read. Played back through NX_INPUT_SCRIPT, a test run follows a real player's run instead of a blind script.
 #include <cstdio>
 #include <algorithm>
@@ -68,9 +68,7 @@ void record(const PadState& p, double t) {
     if (!init) {
         init = true;
         for (double& d : down) d = -1;
-        const char* e = std::getenv("NX_INPUT_RECORD");
-        std::string path = e && std::strcmp(e, "1") != 0 ? std::string(e) : data_root() + "/input_record.txt";
-        f = fopen_utf8(path, "w");
+        f = fopen_utf8(data_root() + "/input_record.txt", "w");
     }
     if (!f) return;
     constexpr int32_t half = kStickMax / 2;
@@ -94,7 +92,11 @@ void record(const PadState& p, double t) {
 
 void input_script(PadState& p) {
     static const char* env = std::getenv("NX_INPUT_SCRIPT");
-    static const bool recording = std::getenv("NX_INPUT_RECORD") != nullptr;
+    // Only NX_INPUT_RECORD=1: a path is the frame recorder's (play.cpp), which must not share its file.
+    static const bool recording = [] {
+        const char* e = std::getenv("NX_INPUT_RECORD");
+        return e && std::strcmp(e, "1") == 0;
+    }();
     if (!env && !recording) return;
     static const uint64_t start = monotonic_ns();
     double t = double(monotonic_ns() - start) / 1e9;

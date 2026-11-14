@@ -78,6 +78,8 @@ struct Bound {
     VkRect2D scissor{};
     float blend[4] = {};
     uint32_t raster[10] = {};  // raster_dynamic's inputs: stencil reference and masks per face, the depth bias
+    bool has_raster_depth = false;
+    RasterDepthState raster_depth{};  // GPL dynamic mode (nvn_pipeline.h): the cull/depth/stencil state set
 } g_bound;
 uint64_t g_state_set = 0, g_state_kept = 0;  // state commands recorded and left out, for the log
 
@@ -409,7 +411,17 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     }
     GpuImage* dimg = tt.depth ? image_of(tt.depth) : nullptr;
     key.depth_format = dimg && dimg->aspect != VK_IMAGE_ASPECT_COLOR_BIT ? dimg->format : VK_FORMAT_UNDEFINED;
-    VkPipeline pipeline = graphics_pipeline(key, layout);
+    // A pipeline not compiled yet may be compiled on a worker while this draw is skipped, when the next frame draws it
+    // again: every target of the pass was also rendered in the previous frame (or this one). A target rendered for
+    // the first time, or once now and then (a light probe, a capture), waits for its pipeline (nvn_pipeline_async.h).
+    bool may_skip = t.color_count || dimg;
+    const uint64_t frame = g_frame.load(std::memory_order_relaxed) + 1;
+    for (uint32_t k = 0; k < t.color_count && may_skip; k++) {
+        GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
+        may_skip = img && img->rendered_frame && img->rendered_frame + 1 >= frame;
+    }
+    if (may_skip && dimg) may_skip = dimg->rendered_frame && dimg->rendered_frame + 1 >= frame;
+    VkPipeline pipeline = graphics_pipeline(key, layout, may_skip);
     if (!pipeline) {
         g_stats.no_pipeline++;
         return false;
@@ -423,6 +435,16 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         g_state_kept++;
     }
     bind_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout);
+    // GPL dynamic mode: the rasterizer and depth/stencil state the pipeline leaves to the command buffer.
+    if (gpl_dynamic_state()) {
+        const RasterDepthState rd = raster_depth_state(key);
+        if (!g_bound.has_raster_depth || std::memcmp(&rd, &g_bound.raster_depth, sizeof rd) != 0) {
+            set_raster_depth_state(cb, rd);
+            g_bound.raster_depth = rd, g_bound.has_raster_depth = true, g_state_set++;
+        } else {
+            g_state_kept++;
+        }
+    }
 
     // The vertex buffers resolved above, plus the zero stream (binding 15).
     for (uint32_t s = 0; s < 15; s++)
@@ -594,8 +616,10 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
     }
     g_pass_serial++;
     for (uint32_t k = 0; k < 9; k++)  // this pass's targets only (the other slots may name freed images)
-        if ((k < g_pass.color_count || (k == 8 && g_pass.depth)) && g_pass_images[k])
+        if ((k < g_pass.color_count || (k == 8 && g_pass.depth)) && g_pass_images[k]) {
             g_pass_images[k]->rendered_at = g_pass_serial;
+            g_pass_images[k]->rendered_frame = g_frame.load(std::memory_order_relaxed) + 1;
+        }
     gpu_profile_mark(cb, "outside passes (clears, uploads, copies)");
 }
 void draw_end_rendering(VkCommandBuffer cb, int reason) {  // and the pending clears (nvn_clears.cpp)

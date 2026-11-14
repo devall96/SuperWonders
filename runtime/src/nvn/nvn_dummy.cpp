@@ -2,6 +2,7 @@
 // (700-line rule).
 #include <cstdlib>
 #include <map>
+#include <utility>
 
 #include "nvn_pipeline.h"
 
@@ -9,19 +10,24 @@ namespace nx::nvn {
 
 using namespace nx::vk;
 
-std::map<VkImageViewType, GpuImage>& dummies() {
-    static std::map<VkImageViewType, GpuImage> d;
+// One per view type and kind (colour, depth). Keyed by view type alone, the first 2D dummy made was the one every
+// later 2D binding got: in Wonder a colour one (RGBA8, 0), so an empty shadow-map slot (a depth binding, sampled
+// with a compare sampler) read a colour image. NVIDIA compared its R and drew lit; AMD has no depth comparison on
+// colour formats and returned 0, fully shadowed: the opening's cast and Bowser drew black on an RX 9070 XT. The
+// depth dummy is D32 at 1.0, the far plane: a compare with it passes, nothing is shadowed.
+std::map<std::pair<VkImageViewType, bool>, GpuImage>& dummies() {
+    static std::map<std::pair<VkImageViewType, bool>, GpuImage> d;
     return d;
 }
 
 bool dummy_ready(const ImageShape& shape) {
-    auto it = dummies().find(view_type(shape));
+    auto it = dummies().find({view_type(shape), shape.depth});
     return it != dummies().end() && it->second.image;
 }
 
 VkImageView dummy_view(VkCommandBuffer cb, const ImageShape& shape) {
     VkImageViewType type = view_type(shape);
-    auto& d = dummies()[type];
+    auto& d = dummies()[{type, shape.depth}];
     if (d.image) return d.view;
     bool cube = type == VK_IMAGE_VIEW_TYPE_CUBE || type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};

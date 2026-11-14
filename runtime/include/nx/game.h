@@ -24,5 +24,7 @@ void after_init();
 void renderer_start();
 // The first frame was presented.
 void first_frame();
+// Called after each present so the game's simulation step can follow elapsed real time.
+void frame_presented(uint64_t now_ns, int present_interval);
 
 }  // namespace nx::game

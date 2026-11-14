@@ -58,6 +58,7 @@ class Module:
     init_array: list = field(default_factory=list)
     fini_array: list = field(default_factory=list)
     eh_frame_hdr: tuple = (0, 0)
+    frame_step_offset: int = 0  # optional runtime-owned page reserved by game-specific patches
 
     def u32(self, addr):
         return struct.unpack_from("<I", self.image, addr)[0]

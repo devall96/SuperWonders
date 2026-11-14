@@ -5,8 +5,8 @@ The zip holds the built game and its data, nothing to install or build there:
 
     WonderPC/wonder.exe                      the build (private/wonder/build)
     WonderPC/msvcp140.dll, vcruntime140*.dll the C++ runtime, app-local (Visual Studio's redistributable files)
-    WonderPC/Jogar.bat                       sets NX_DATA_ROOT to data\\ and starts the game
-    WonderPC/LEIA-ME.txt                     requirements and switches
+    WonderPC/data/                           data root discovered beside wonder.exe at startup
+    WonderPC/README.txt                      requirements and direct-launch instructions
     WonderPC/data/analysis, extract/romfs, spirv (with results.tsv), fonts, user/save (unless --no-save)
 
 The data comes from the owner's own cartridge: for the owner's machines only, never to be shared.
@@ -22,40 +22,19 @@ import zipfile
 TOP = "WonderPC/"
 REDIST = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC"
 
-JOGAR = r"""@echo off
-rem Super Mario Bros. Wonder (Switch recomp) - starts the game with the data next to this file.
-cd /d "%~dp0"
-set NX_DATA_ROOT=%~dp0data
-set NX_LOG=%~dp0data\nx.log
-if not defined NX_MEM_LIMIT_GB set NX_MEM_LIMIT_GB=8
-if not defined NX_GPU set NX_GPU=discrete
-start "" "%~dp0wonder.exe"
-"""
+README = """Super Mario Bros. Wonder recompilation for Windows
 
-LEIAME = """Super Mario Bros. Wonder - recompilado para Windows (uso pessoal; dados do seu proprio cartucho, nao compartilhe)
+Extract this folder to a short path (for example C:\\WonderPC), then double-click wonder.exe. No command script is
+needed. Keep the data folder beside wonder.exe; the executable finds it automatically, regardless of the current
+working directory. Deep paths can exceed Windows path limits for some game files.
 
-Como rodar: extraia num caminho CURTO (por exemplo C:\\ , criando C:\\WonderPC) e de dois cliques em Jogar.bat.
-Pastas fundas (Downloads\\...\\...) passam do limite de 260 caracteres do Windows em alguns arquivos do jogo.
-A primeira abertura demora alguns minutos (o antivirus le os ~31 mil arquivos pela primeira vez); depois e normal.
+Requirements: Windows 10/11 64-bit, an AVX2-capable CPU, a GPU and driver supporting Vulkan 1.3, and 16 GB of RAM
+recommended. The first launch may take a few minutes while Windows Defender scans the files.
 
-Requisitos:
-- Windows 10 ou 11, 64 bits
-- CPU com AVX2 (Intel 4a geracao / Haswell ou mais nova, AMD Ryzen)
-- GPU com Vulkan 1.3 e driver atualizado (NVIDIA GTX 900 ou mais nova, AMD RX 400 ou mais nova, Intel Iris Xe / Arc / UHD 7xx)
-- 16 GB de RAM recomendados (o jogo usa 3 a 7 GB)
+Use the in-game F1 menu for settings. F11 or Alt+Enter toggles fullscreen. Logs are written to data\\nx.log; saves are
+in data\\user\\save.
 
-Controles: controle Xbox (XInput, layout Nintendo: A e B trocados) ou teclado:
-  WASD / setas mover, Espaco = A (pular), Shift = B (correr), J = X, K = Y, Q/E = L/R, Enter = +, Esc = -
-  Tela de titulo: L+R (Q+E). F11 ou Alt+Enter: tela cheia.
-
-Opcoes (edite Jogar.bat, antes da linha start):
-  set NX_GPU=integrated     usar a GPU integrada (padrao: a dedicada)
-  set NX_HANDHELD=1         modo portatil, 720p (mais leve)
-  set NX_MUTE=1             sem som
-  set NX_FULLSCREEN=1       comecar em tela cheia
-
-Problemas: o log fica em data\\nx.log (mande junto com um video do erro).
-O save fica em data\\user\\save.
+This personal package contains files generated from the owner's own game dump and must not be shared.
 """
 
 
@@ -85,6 +64,11 @@ def entries(root, save):
     if not os.path.isfile(exe):
         sys.exit(f"missing {exe} (build it first)")
     yield exe, "wonder.exe"
+    # A build with the game code in its own library (NX_GAME_LIBRARY, the default): the library and the C++ runtime
+    # it shares with the program, next to it.
+    for f in ("wonder_game.dll", "libc++.dll", "libunwind.dll"):
+        if os.path.isfile(os.path.join(root, "build", f)):
+            yield os.path.join(root, "build", f), f
     yield from redist_dlls()
     yield from tree(os.path.join(root, "analysis"), "data/analysis")
     yield from tree(os.path.join(root, "extract", "romfs"), "data/extract/romfs")
@@ -108,8 +92,7 @@ def main():
     print(f"{len(files)} files, {total / 2**30:.2f} GB -> {a.out}")
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     with zipfile.ZipFile(a.out, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
-        z.writestr(TOP + "Jogar.bat", JOGAR.replace("\n", "\r\n"))
-        z.writestr(TOP + "LEIA-ME.txt", LEIAME.replace("\n", "\r\n"))
+        z.writestr(TOP + "README.txt", README.replace("\n", "\r\n"))
         for k, (p, name) in enumerate(files):
             z.write(p, TOP + name)
             if k % 2000 == 0:

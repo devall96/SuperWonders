@@ -5,7 +5,9 @@
 
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -78,7 +80,28 @@ struct PipelineKey {
     uint32_t ufloat_colors = 0;  // bit k: colour target k is R11G11B10F (no alpha: destination alpha reads 1)
     uint32_t alpha_to_coverage = 0;  // BindMultisampleState (G7)
 };
-VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout);
+// `may_skip`: the caller can draw this in the next frame instead (nvn_pipeline_async.h). A pipeline not compiled yet
+// is then compiled on a worker and VK_NULL_HANDLE returned meanwhile; otherwise it is compiled here, as before.
+VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout, bool may_skip = false);
+// VK_EXT_graphics_pipeline_library (nvn_pipeline.cpp, on with vk_gpl()). In its dynamic mode (NX_GPL_DYNAMIC, on by
+// default) the rasterizer and depth/stencil state below is dynamic in every pipeline graphics_pipeline() returns, so
+// the draw sets it (set_raster_depth_state) and pipelines are shared by draws that differ only in it.
+bool gpl_dynamic_state();
+struct RasterDepthState {
+    VkCullModeFlags cull;
+    VkFrontFace front;
+    VkBool32 bias, depth_test, depth_write, stencil_test;
+    VkCompareOp depth_compare;
+    VkStencilOpState faces[2];  // front, back (their masks and reference are dynamic anyway)
+};
+RasterDepthState raster_depth_state(const PipelineKey& key);  // zero-filled first: compare it byte for byte
+void set_raster_depth_state(VkCommandBuffer cb, const RasterDepthState& s);
+// Startup preparation: makes the module of the program's stages on the caller, and returns the job (for a worker)
+// that creates its pre-rasterization and fragment shader libraries; empty without GPL.
+std::function<void()> gpl_program_job(const ShaderInfo* vs, const ShaderInfo* fs, const ProgramLayout& layout);
+void gpl_log();
+// Destroys the modules module_of made for these shaders (the startup catalog's, once its jobs are done).
+void release_modules(const std::set<const ShaderInfo*>& shaders);  // one line per timing window (nvn_pipeline_cache.cpp creation_log)
 void record_pipeline_key(const PipelineKey& key);
 void prepare_recorded_pipelines();
 bool depth_remap();  // NX_CLIP_Z_PATCH: clip z -w..w mapped in the vertex shaders, not by VK_EXT_depth_clip_control
@@ -119,6 +142,9 @@ bool patch_int_textures(const std::vector<uint32_t>& in, const std::map<uint32_t
                         std::vector<uint32_t>& out);
 // Function-local variables without an initializer start at 0 (nvn_spirv_locals.cpp), as on Maxwell/NVIDIA.
 bool zero_function_locals(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
+// nvn_spirv_unused.cpp: declarations no shader uses that trip a device feature or limit (interlock, cull distance).
+bool strip_unused_interlock(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
+bool drop_unused_cull_distance(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
 // The code of a stage's module: its SPIR-V with every patch above that applies (`kinds` as patch_int_inputs, or
 // null; `unwritten` as default_unwritten_inputs). `int_inputs` gets whether patch_int_inputs changed it.
 std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, bool* int_inputs);
@@ -159,5 +185,11 @@ VkImageViewType view_type(const ImageShape& shape);  // the view type a shader's
 bool dummy_ready(const ImageShape& shape);
 // A 1x1 black texture of the shape, for bindings with nothing behind them.
 VkImageView dummy_view(VkCommandBuffer cb, const ImageShape& shape);
+// nvn_compare_twin.cpp: a D32 copy of an R32F colour image sampled with a depth-compare sampler, for GPUs without
+// depth comparison on colour formats (AMD). wanted: the image needs one; ready: it is up to date (no copy, so no
+// break of the render pass); view: the twin's view, copied first when stale (outside a render pass).
+bool compare_twin_wanted(const GpuImage& img);
+bool compare_twin_ready(const GpuImage& img);
+VkImageView compare_twin_view(VkCommandBuffer cb, GpuImage& img, VkImageViewType type);
 
 }  // namespace nx::nvn

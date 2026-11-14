@@ -30,7 +30,7 @@ README.
 | `NX_INPUT="<frame>:<button>,..."` | older, per presented frame, 8-frame presses | hle_hid.cpp |
 | `NX_TRACE_FS=1` | every file the game opens or looks for; also counts reads of streamed audio (`.bwav`) | hle_fs.cpp |
 | `NX_HEADLESS=1` | no visible window, nothing presented; frames still render and dump (unattended runs) | platform_mac.cpp, nvn_vk.cpp |
-| `NX_MEM_LIMIT_GB=<n>` | the memory guard ends the process past this footprint (default 8); `memory:` lines every 30 s | memguard_mac.cpp |
+| `NX_MEM_LIMIT_GB=<n>` | desktop cleanup threshold (default 8 GB): asks Vulkan to release unused reusable images when crossed; does not close the game or cap live allocations; `memory:` lines every 30 s | memguard_* |
 | `NX_THREAD_DUMP_AT=<s>` | once, every guest thread's call chain (frame-pointer walk) | kernel.cpp |
 | `NX_TRACE_FS_HASH=<hash>` | with `NX_TRACE_DRAWS`: only draws with that fragment shader | nvn_draw.cpp |
 | `NX_TRACE_COUNT=<n>` | how many draws `NX_TRACE_DRAWS` logs (default 80) | nvn_draw.cpp |
@@ -58,7 +58,7 @@ Shaders: `spirv-cross private/wonder/spirv/<hash>.spv --version 450` shows the t
 | Variable | What it does | Code |
 |---|---|---|
 | `NX_GPU=discrete\|integrated\|<index>\|<name part>` | the Vulkan device to run on; default the first discrete GPU. Every device is logged (`nvn/vk: GPU n: ...`), then the choice | nvn_gpu_pick.cpp |
-| `NX_MUTE=1` | no sound device (also implied by `NX_HEADLESS`) | platform_win.cpp, platform_mac.cpp |
+| `NX_MUTE=1` | no sound device (also implied by `NX_HEADLESS`); `NX_MUTE=0` or empty means sound on | platform_win.cpp, platform_mac.cpp |
 | `NX_FULLSCREEN=1` | start fullscreen (F11 / Alt+Enter toggle) | platform_win.cpp |
 | `NX_HANDHELD=1` | handheld mode: the game renders for 1280x720 | svc_am.cpp |
 | `NX_ASTC_DECODE=1|linear|srgb|<hex>,...` | ASTC decoded on the CPU even where the GPU has it (all, one half, or the listed NVN formats) (compare with the hardware decoder; DEBUG-2 #69) | nvn_vk.cpp, nvn_upload.cpp |

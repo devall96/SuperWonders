@@ -1,10 +1,13 @@
-// What the runtime needs from the host OS. platform_win.cpp and platform_android.cpp implement it.
+// What the runtime needs from the host OS. platform_win.cpp, platform_android.cpp, platform_mac.cpp and
+// platform_linux.cpp implement it.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace nx::plat {
 
@@ -45,6 +48,13 @@ void log_line(const char* line);  // stderr / logcat
 std::string data_root();
 std::string setting(const std::string& key);  // a player setting: config.txt (Android), NX_<KEY> (PC); "" if unset          // where private/ lives ("private" on PC, the app's external files dir on Android)
 
+// ---- the launcher (launcher/launcher.cpp; Windows and Linux) ----
+// The system's folder picker, titled `title`, starting in `start` (may be ""). Returns at once; `done` gets the folder
+// chosen, or "" when the player cancelled, from another thread.
+void pick_folder(const std::string& title, const std::string& start, std::function<void(std::string)> done);
+void open_folder(const std::string& path);  // shows it in the system's file manager (an http(s) address: the browser)
+std::vector<std::string> program_args();     // the command line, without the program's own path
+
 // ---- display, input, audio ----
 void* create_window();       // native window handle for the Vulkan surface (HWND / ANativeWindow*), kept alive
 void release_window(void* w);  // done with a handle from create_window
@@ -73,6 +83,9 @@ struct PadState {
 };
 void read_pad(PadState& p);  // player 1
 bool fast_forward();  // held: the game runs unpaced (Tab on PC; false where there is no key for it)
+// Player 1's controller rumble: low (heavy) and high (light) motor, 0..1, scaled by the player's strength setting.
+// Called on every vibration value the game sends; the platform keeps it running until the next.
+void rumble(float low, float high);
 // Touch controls to draw over the picture (touch_layout.cpp, platform_android_input.cpp): circles at x, y (0..1
 // across the landscape screen), radius r (a fraction of its height), opacity alpha. 0 where nothing is drawn.
 struct OverlayShape {
@@ -89,6 +102,7 @@ void gpu_turbo();  // NX_GPU_TURBO=1: the Adreno GPU at its highest clock (perf_
 void frame_thread_tick(int role);
 void frame_presented();  // after each present to the display
 void overlay_game_interval(int interval);  // guest's desired interval in 60 Hz ticks
+void overlay_game_speed(double percent);    // ratio of applied guest simulation time to elapsed wall time
 void overlay_presented(uint64_t now_ns);   // host timestamp for a presented frame
 // Write watches (write_watch.cpp; page protection, POSIX): add fails when unsupported or full; take re-arms and
 // says whether the range was written since the last take; the crash handler calls fault first (true: handled).
@@ -99,7 +113,7 @@ bool write_watch_fault(void* at);
 // NX_HEADLESS=1: no visible window (it is created hidden) and nothing presented; frames still render and
 // NX_DUMP_FRAMES still writes them. For unattended test runs.
 bool headless();
-// Ends the process when its memory footprint passes NX_MEM_LIMIT_GB (default 8); logs it every 30 s (macOS).
+// Monitors memory against NX_MEM_LIMIT_GB (default 8); desktop builds trim reusable Vulkan images, Android stops.
 void start_memory_guard();
 void set_memory_limit_gb(double gb);
 // How much of [from, to) (monotonic ns) the memory guard spent reading (memguard_android.cpp; 0 elsewhere).

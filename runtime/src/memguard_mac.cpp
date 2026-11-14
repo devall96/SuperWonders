@@ -1,7 +1,6 @@
-// Memory guard (macOS): the process's physical footprint (what Activity Monitor shows, GPU memory included on Apple
-// silicon) is checked every 250 ms; past the limit the process ends at once, so a leak can never push the machine
-// into swap until it freezes (it did: 85 GB, texture images never freed). The limit is NX_MEM_LIMIT_GB (default 8, half of a 16 GB Mac);
-// the footprint is logged every 30 s so growth shows before it matters.
+// Memory pressure monitor (macOS): the process's physical footprint is checked every 250 ms. Past NX_MEM_LIMIT_GB
+// (default 8), ask NVN to discard its reusable image cache and keep the game running. This is a cleanup threshold,
+// not an allocation cap; the footprint is logged every 30 s.
 #include <mach/mach.h>
 #include <unistd.h>
 
@@ -11,6 +10,7 @@
 
 #include <nx/runtime.h>
 
+#include "nvn/nvn_vk.h"
 #include "platform.h"
 
 namespace nx::plat {
@@ -33,20 +33,21 @@ void start_memory_guard() {
     const uint64_t limit = uint64_t(gb * double(1ull << 30));
     std::thread([limit, gb] {
         uint64_t ticks = 0, peak = 0;
+        bool pressure = false;
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             uint64_t f = footprint();
             if (f > peak) peak = f;
             if (++ticks % 120 == 0)
-                log("memory: %.2f GB (peak %.2f GB, limit %.1f GB)", double(f) / double(1ull << 30),
+                log("memory: %.2f GB (peak %.2f GB, cleanup threshold %.1f GB)", double(f) / double(1ull << 30),
                     double(peak) / double(1ull << 30), gb);
-            if (f > limit) {
-                char msg[160];
-                std::snprintf(msg, sizeof msg, "memory: %.2f GB is over the %.1f GB limit (NX_MEM_LIMIT_GB): stopping",
-                              double(f) / double(1ull << 30), gb);
-                log("%s", msg);
-                std::fprintf(stderr, "%s\n", msg);
-                _exit(3);
+            if (f <= limit * 9 / 10) pressure = false;
+            if (f > limit && (!pressure || ticks % 120 == 0)) {
+                pressure = true;
+                const uint64_t released = nx::nvn::trim_reusable_image_cache();
+                log("memory: %.2f GB passed the %.1f GB cleanup threshold; requested release of %.1f MiB from "
+                    "the reusable Vulkan image cache; game continues (this is not a hard cap)",
+                    double(f) / double(1ull << 30), gb, double(released) / (1ull << 20));
             }
         }
     }).detach();

@@ -184,6 +184,8 @@ bool headless() {  // NX_HEADLESS (platform.h)
     return on;
 }
 
+void rumble(float, float) {}  // not yet on this platform
+
 void read_pad(PadState& p) {
     std::lock_guard lk(g_in);
     p.buttons |= g_pad_buttons.buttons;

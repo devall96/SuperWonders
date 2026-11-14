@@ -2,13 +2,15 @@
 // The game draws through NVN (docs/NVN.md); what we know about it is in docs/nvn/WONDER.md.
 #include <nx/game.h>
 #include <nx/runtime.h>
+#include <nx/gamelib.h>
 #include <nx/module.h>
 
 #include <cstring>
+#include <cstdlib>
+#include <atomic>
+#include <algorithm>
 
 #include "platform.h"
-
-extern const nx::ModuleInfo nx_module_main;
 
 namespace nx {
 
@@ -24,11 +26,39 @@ static uint32_t float_bits(float value) {
     return bits;
 }
 
+static uint64_t frame_step_page() {
+    const ModuleInfo* main = game_lib().main;
+    if (!main || !main->frame_step_offset) return 0;
+    return main->base + main->frame_step_offset;
+}
+
+static void store_frame_step(float seconds) {
+    const uint64_t page = frame_step_page();
+    if (!page) return;
+    const float ratio = seconds * 60.0f;
+    uint64_t bits = 0;
+    std::memcpy(&bits, &ratio, sizeof ratio);
+    std::memcpy(reinterpret_cast<uint8_t*>(&bits) + sizeof ratio, &seconds, sizeof seconds);
+    auto* step = reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(page));
+    std::atomic_ref<uint64_t>(*step).store(bits, std::memory_order_release);
+}
+
+static void init_frame_step() {
+    if (!frame_step_page()) {
+        log("wonder: real-time frame step page was not reserved; retaining the game's original frame timing");
+        return;
+    }
+    store_frame_step(1.0f / 60.0f);
+    plat::overlay_game_speed(100.0);
+    log("wonder: real-time frame step initialized at 16.67 ms");
+}
+
 // Gather evidence about Wonder's own virtual-screen globals before implementing Hor+.
 // The final image pass can only fit, crop, or stretch its 16:9 source; finding and
 // classifying these game-side values is needed to expand the camera while preserving HUD layout.
 static void trace_screen_globals() {
     if (plat::setting("wonder_widescreen_trace") != "1") return;
+    const ModuleInfo& nx_module_main = *game_lib().main;
     const uint64_t begin = nx_module_main.base + nx_module_main.data;
     const uint64_t end = nx_module_main.base + nx_module_main.bss + nx_module_main.bss_size;
     const uint32_t pairs[][2] = {
@@ -63,10 +93,71 @@ void menu_init();
 }
 
 void game::after_init() {
+    init_frame_step();
     trace_screen_globals();
     wonder::menu_init();
 }
 void game::renderer_start() {}
 void game::first_frame() {}
+
+void game::frame_presented(uint64_t now_ns, int present_interval) {
+    // recomp/wonder_realtime.py reserves one aligned page at the end of main's BSS.
+    // Two adjacent floats are consumed by the patched game code: seconds * 60 and seconds.
+    static const bool realtime = [] {
+        const char* value = std::getenv("NX_REALTIME_FRAME_STEP");
+        return !(value && value[0] == '0');
+    }();
+    static uint64_t previous_ns = 0;
+    static double samples[5]{};
+    static unsigned sample_count = 0, sample_next = 0;
+    static uint64_t report_ns = 0, report_frames = 0;
+    static double report_seconds = 0, report_game_seconds = 0;
+    static double speed_elapsed = 0, speed_simulated = 0;
+
+    if (!frame_step_page()) return;
+
+    if (!previous_ns) {
+        previous_ns = now_ns;
+        report_ns = now_ns;
+        return;
+    }
+    double dt = double(now_ns - previous_ns) * 1e-9;
+    previous_ns = now_ns;
+    if (dt < 0.001 || dt > 0.25) {
+        sample_count = sample_next = 0;
+        return;
+    }
+
+    double seconds = double(std::max(1, present_interval)) / 60.0;
+    if (realtime) {
+        samples[sample_next++ % 5] = dt;
+        if (sample_count < 5) ++sample_count;
+        seconds = 0;
+        for (unsigned i = 0; i < sample_count; ++i) seconds += samples[i];
+        seconds /= sample_count;
+        seconds = std::min(seconds, 1.0 / 15.0);  // spread brief hitches; avoid an enormous one-frame simulation step
+    }
+
+    store_frame_step(float(seconds));
+    speed_elapsed += dt;
+    speed_simulated += seconds;
+    if (speed_elapsed >= 0.5) {
+        plat::overlay_game_speed(speed_elapsed > 0 ? speed_simulated / speed_elapsed * 100.0 : 100.0);
+        speed_elapsed = speed_simulated = 0;
+    }
+
+    ++report_frames;
+    report_seconds += dt;
+    report_game_seconds += seconds;
+    if (now_ns - report_ns >= 30'000'000'000ull) {
+        log("wonder: real-time frame step %s: %llu presents in %.1f s (%.1f fps), simulation step %.4f of elapsed time",
+            realtime ? "enabled" : "disabled", (unsigned long long)report_frames,
+            double(now_ns - report_ns) / 1e9, double(report_frames) / (double(now_ns - report_ns) / 1e9),
+            report_seconds > 0 ? report_game_seconds / report_seconds : 0.0);
+        report_ns = now_ns;
+        report_frames = 0;
+        report_seconds = report_game_seconds = 0;
+    }
+}
 
 }  // namespace nx

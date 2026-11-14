@@ -5,28 +5,37 @@
 #include <deque>
 
 #include "ipc.h"
+#include "platform.h"
 
 namespace nx {
 
 namespace {
 std::atomic<int> g_internal_resolution_preset{0};
 std::atomic<int> g_game_language{0};
+std::atomic<uint32_t> g_native_width{1920};  // preset 6: the window's or screen's width (set by the platform)
 }
 
 void set_internal_resolution_preset(int preset) {
     if (preset < 0) preset = 0;
-    if (preset > 4) preset = 4;
+    if (preset > 6) preset = 6;
     g_internal_resolution_preset.store(preset, std::memory_order_relaxed);
 }
 
 float internal_resolution_scale() {
-    static constexpr float scales[] = {1.0f, 2.0f / 3.0f, 5.0f / 6.0f, 1.0f, 4.0f / 3.0f};
-    return scales[g_internal_resolution_preset.load(std::memory_order_relaxed)];
+    static constexpr float scales[] = {1.0f, 2.0f / 3.0f, 5.0f / 6.0f, 1.0f, 4.0f / 3.0f, 2.0f, 0.0f};
+    const int p = g_internal_resolution_preset.load(std::memory_order_relaxed);
+    return p == 6 ? float(g_native_width.load(std::memory_order_relaxed)) / 1920.0f : scales[p];
 }
 
 uint32_t internal_resolution_target_width() {
-    static constexpr uint32_t widths[] = {0, 1280, 1600, 1920, 2560};
-    return widths[g_internal_resolution_preset.load(std::memory_order_relaxed)];
+    // 5: 3840 (4K); 6: Native, the width the image is shown at (no stretching, so no upscaling filter).
+    static constexpr uint32_t widths[] = {0, 1280, 1600, 1920, 2560, 3840, 0};
+    const int p = g_internal_resolution_preset.load(std::memory_order_relaxed);
+    return p == 6 ? g_native_width.load(std::memory_order_relaxed) : widths[p];
+}
+
+void set_native_render_width(uint32_t width) {
+    if (width >= 640 && width <= 7680) g_native_width.store(width, std::memory_order_relaxed);
 }
 
 void set_game_language(int language) {
@@ -89,10 +98,30 @@ std::shared_ptr<Service> common_state_getter() {
         s.cmds[9] = [](IpcCtx& c) { c.push<uint8_t>(1); return 0u; };   // GetCurrentFocusState: in focus
         s.cmds[60] = [](IpcCtx& c) {  // GetDefaultDisplayResolution
             const int preset = g_internal_resolution_preset.load(std::memory_order_relaxed);
-            static constexpr uint32_t widths[] = {1920, 1280, 1600, 1920, 2560};
-            static constexpr uint32_t heights[] = {1080, 720, 900, 1080, 1440};
-            const uint32_t width = preset ? widths[preset] : handheld ? 1280 : 1920;
+            static constexpr uint32_t widths[] = {1920, 1280, 1600, 1920, 2560, 3840, 0};
+            static constexpr uint32_t heights[] = {1080, 720, 900, 1080, 1440, 2160, 0};
+            uint32_t width = preset ? widths[preset] : handheld ? 1280 : 1920;
             const uint32_t height = preset ? heights[preset] : handheld ? 720 : 1080;
+            // Optional Hor+ experiment: widen guest-side culling/camera resolution to match the host aspect ratio.
+            // This is opt-in because ultrawide behavior still needs testing on a physical ultrawide display.
+            static const bool wide_guest_resolution = std::getenv("NX_WONDER_WIDE_GUEST_RES") != nullptr;
+            if (wide_guest_resolution) {
+                uint32_t host_width = 0, host_height = 0;
+                plat::window_size(host_width, host_height);
+                if (host_width && host_height) {
+                    const uint32_t wide_width = uint32_t((uint64_t(height) * host_width + host_height / 2) / host_height);
+                    if (uint64_t(wide_width) * 9 >= uint64_t(height) * 16) {
+                        width = wide_width;
+                        static uint32_t logged_width = 0, logged_height = 0;
+                        if (logged_width != width || logged_height != height) {
+                            log("am: experimental wide guest resolution %ux%u (host %ux%u)", width, height,
+                                host_width, host_height);
+                            logged_width = width;
+                            logged_height = height;
+                        }
+                    }
+                }
+            }
             static int logged_preset = -1;
             if (logged_preset != preset) {
                 log("am: GetDefaultDisplayResolution preset %d -> %ux%u", preset, width, height);

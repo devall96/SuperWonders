@@ -3,9 +3,11 @@
 // compute and graphics pipelines into the driver's persistent VkPipelineCache before the first game frame.
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -13,6 +15,7 @@
 #include <vector>
 
 #include "nvn_pipeline.h"
+#include "nvn_pipeline_async.h"
 #include "nvn_shader_prepare.h"
 #include "platform.h"
 
@@ -314,21 +317,26 @@ void prepare_shader_catalog() {
     VkPhysicalDeviceProperties props{};
     p_vkGetPhysicalDeviceProperties(vk_physical(), &props);
     char marker_name[128];
-    std::snprintf(marker_name, sizeof marker_name, "/shader_prepare_%04x_%04x_%08x_%016llx.done",
+    // With GPL (nvn_pipeline.cpp) the preparation makes each program's shader libraries instead of a whole pipeline:
+    // its own marker, so switching modes prepares again.
+    const bool gpl = vk_gpl() && !render_pass_objects();  // as gpl_program_job decides
+    std::snprintf(marker_name, sizeof marker_name, "/shader_prepare_%s%04x_%04x_%08x_%016llx.done", gpl ? "gpl_" : "",
                   props.vendorID, props.deviceID, props.driverVersion, (unsigned long long)fingerprint);
     const std::string marker = plat::data_root() + marker_name;
     if (marker_exists(marker)) return;
 
     const uint64_t total = programs.size();
-    plat::shader_compile_progress(0, total, true);
+    prep_progress(0, total, true, 0);
     log("nvn/vk: preparing %llu shader programs before the first frame", (unsigned long long)total);
     pipeline_cache();
 
     g_catalog_infos.resize(stages.size());
     auto& infos = g_catalog_infos;
-    std::vector<VkShaderModule> modules(stages.size(), VK_NULL_HANDLE);
-    std::vector<uint64_t> module_unwritten(stages.size(), UINT64_MAX);
-    uint64_t attempted = 0, compiled = 0, failed = 0;
+    // One module per (stage, unwritten inputs), kept to the end: the batches below compile on worker threads
+    // (nvn_pipeline_async.h), so a module still in use must not be replaced.
+    std::map<std::pair<uint32_t, uint32_t>, VkShaderModule> modules;
+    uint64_t attempted = 0;
+    std::atomic<uint64_t> compiled{0}, failed{0};
     std::map<std::vector<const ShaderInfo*>, const ProgramLayout*> layouts;
     std::set<std::vector<uint32_t>> processed;
     const auto get_info = [&](uint32_t index) -> const ShaderInfo* {
@@ -338,13 +346,27 @@ void prepare_shader_catalog() {
     };
     const auto get_module = [&](uint32_t index, uint32_t unwritten) -> VkShaderModule {
         if (index >= stages.size()) return VK_NULL_HANDLE;
-        if (modules[index] && module_unwritten[index] == unwritten) return modules[index];
-        if (modules[index]) p_vkDestroyShaderModule(vk_device(), modules[index], nullptr), modules[index] = VK_NULL_HANDLE;
-        const ShaderInfo* info = get_info(index);
-        if (!info) return VK_NULL_HANDLE;
-        modules[index] = make_module(info, unwritten);
-        module_unwritten[index] = unwritten;
-        return modules[index];
+        VkShaderModule& m = modules[{index, unwritten}];
+        if (!m)
+            if (const ShaderInfo* info = get_info(index)) m = make_module(info, unwritten);
+        return m;
+    };
+    // Programs go to the workers 64 at a time; progress is shown between batches. The cache (100-240 MB) is saved at
+    // most every 30 s: read back after every batch, it competed with the workers compiling into it.
+    // NX_PREP_SAVE_SECONDS=<n>: another interval (0: after every batch, as before).
+    static const uint64_t save_ns = [] {
+        const char* e = std::getenv("NX_PREP_SAVE_SECONDS");
+        return uint64_t(e ? std::strtoull(e, nullptr, 10) : 30) * 1'000'000'000ull;
+    }();
+    std::vector<std::function<void()>> batch;
+    const uint64_t prep_start = plat::monotonic_ns();
+    uint64_t saved_at = prep_start;
+    const auto flush = [&] {
+        // the compile screen keeps moving while the workers compile (a frame every 33 ms at most)
+        run_parallel(batch, [&] { prep_progress(compiled.load(), total, true, 0); });
+        batch.clear();
+        prep_progress(compiled.load(), total, true, 0);
+        if (plat::monotonic_ns() - saved_at >= save_ns) pipeline_cache_save(), saved_at = plat::monotonic_ns();
     };
 
     for (const ProgramRec& program : programs) {
@@ -370,12 +392,14 @@ void prepare_shader_catalog() {
             layouts.emplace(layout_stages, layout);
         } else layout = found->second;
 
-        bool ok = false;
         if (cs) {
             const uint32_t index = *std::find_if(program.stages.begin(), program.stages.end(), [&](uint32_t i) {
                 return i < stages.size() && stages[i].stage == ShaderStage::Compute;
             });
-            ok = warm_compute(cs, *layout, get_module(index, 0));
+            const VkShaderModule module = get_module(index, 0);
+            batch.push_back([cs, layout, module, &compiled, &failed] {
+                (warm_compute(cs, *layout, module) ? compiled : failed)++;
+            });
         } else if (vs && (!fs || fs->stage == ShaderStage::Fragment)) {
             uint32_t vi = UINT32_MAX, fi = UINT32_MAX;
             for (uint32_t i : program.stages) {
@@ -383,21 +407,39 @@ void prepare_shader_catalog() {
                 if (stages[i].stage == ShaderStage::Vertex) vi = i;
                 if (stages[i].stage == ShaderStage::Fragment) fi = i;
             }
+            if (gpl) {  // the stages' libraries: every pipeline of the program in play is then a fast link
+                if (auto job = gpl_program_job(vs, fs, *layout))
+                    batch.push_back([job = std::move(job), &compiled] { job(), compiled++; });
+                else
+                    failed++;
+                if (batch.size() >= 64) flush();
+                continue;
+            }
             const uint32_t unwritten = unwritten_inputs(vs, fs);
-            ok = warm_graphics(vs, fs, *layout, get_module(vi, 0), fs ? get_module(fi, unwritten) : VK_NULL_HANDLE);
+            const VkShaderModule vm = get_module(vi, 0), fm = fs ? get_module(fi, unwritten) : VK_NULL_HANDLE;
+            batch.push_back([vs, fs, layout, vm, fm, &compiled, &failed] {
+                (warm_graphics(vs, fs, *layout, vm, fm) ? compiled : failed)++;
+            });
+        } else {
+            failed++;
         }
-        if (ok) compiled++; else failed++;
-        if ((attempted & 7u) == 0 || attempted == total)
-            plat::shader_compile_progress(compiled, total, true);
-        if (attempted % 512 == 0) pipeline_cache_save();
+        if (batch.size() >= 64) flush();
     }
-    for (VkShaderModule module : modules)
+    if (!batch.empty()) flush();
+    for (auto& [stage, module] : modules)
         if (module) p_vkDestroyShaderModule(vk_device(), module, nullptr);
+    if (gpl) {  // gpl_program_job made them through module_of: ~0.6 GB kept for the process's life otherwise
+        std::set<const ShaderInfo*> catalog;
+        for (auto& info : infos)
+            if (info) catalog.insert(info.get());
+        release_modules(catalog);
+    }
     pipeline_cache_save();
-    write_marker(marker, fingerprint, attempted, compiled);
-    plat::shader_compile_progress(compiled, total, false);
-    log("nvn/vk: startup shader preparation finished: %llu/%llu programs compiled, %llu failed",
-        (unsigned long long)compiled, (unsigned long long)total, (unsigned long long)failed);
+    write_marker(marker, fingerprint, attempted, compiled.load());
+    prep_progress(compiled.load(), total, false, 0);
+    log("nvn/vk: startup shader preparation finished: %llu/%llu programs compiled, %llu failed, in %.1f s",
+        (unsigned long long)compiled.load(), (unsigned long long)total, (unsigned long long)failed.load(),
+        double(plat::monotonic_ns() - prep_start) / 1e9);
 }
 
 }  // namespace nx::nvn

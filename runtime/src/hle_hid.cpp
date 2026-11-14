@@ -1,5 +1,6 @@
 // nn::hid at the API level: player 1's Npad state comes from the platform (XInput + keyboard on Windows, game
-// controllers + touch on Android). Vibration is accepted and dropped.
+// controllers + touch on Android). Vibration: two devices per controller (left and right motor), their values handed to
+// the platform's rumble (plat::rumble; NX_RUMBLE=0: none, as before). The six-axis sensor reports no samples.
 #include <array>
 #include <atomic>
 #include <deque>
@@ -13,7 +14,9 @@
 
 #include <nx/runtime.h>
 
+#include "ipc.h"
 #include "platform.h"
+#include "play.h"
 
 namespace nx {
 
@@ -61,6 +64,7 @@ PadState read() {
     for (const auto& s : script)
         if (g_frame >= s.frame && g_frame < s.frame + 8) p.buttons |= s.buttons;
     read_pad(p);
+    play::pad(p);  // NX_INPUT_FRAMES / NX_INPUT_REPLAY / NX_INPUT_RECORD (play.cpp)
     // Stick directions as buttons, like the hid sysmodule reports them.
     constexpr int32_t t = kStickMax / 2;
     if (p.lx < -t) p.buttons |= kStickLLeft;
@@ -197,7 +201,86 @@ void BindNpadStyleSetUpdateEvent(CPU& c) {  // (const u32& id, SystemEventType*,
     log("hid: style set event bound for id %#x, signalled", id);
 }
 
-void GetVibrationDeviceHandles(CPU& c) { c.x[0] = 0; }  // no vibration devices
+// ---- vibration -------------------------------------------------------------------------------------------------
+// nn::hid::VibrationDeviceHandle (4 bytes): device type, npad id, device index (0 left, 1 right). The SDK's
+// VibrationPlayer / VibrationTarget end in SendVibrationValue with a VibrationValue: amplitude and frequency of the
+// low band and the high band (HD rumble). A controller's two motors take the stronger side's low band (the heavy,
+// low-frequency motor) and high band (the light one).
+constexpr uint32_t kVibrationType = 3;
+
+bool rumble_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_RUMBLE");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+
+std::mutex g_vibration_lock;
+float g_band[2][2] = {};  // [side][low, high] amplitude
+uint64_t g_vibration_sends = 0, g_vibration_nonzero = 0;
+
+void GetVibrationDeviceHandles(CPU& c) {  // (VibrationDeviceHandle* out, int count, const NpadIdType&, NpadStyleSet)
+    if (!rumble_on()) {
+        c.x[0] = 0;
+        return;
+    }
+    uint64_t out = c.x[0];
+    int count = int(c.x[1]);
+    uint32_t id = ld<uint32_t>(c.x[2]);
+    int n = std::clamp(count, 0, 2);
+    for (int k = 0; k < n; k++) st<uint32_t>(out + 4 * uint64_t(k), kVibrationType | (id & 0xFF) << 8 | uint32_t(k) << 16);
+    static bool logged = false;
+    if (!logged) logged = true, log("hid: %d vibration devices for npad %u", n, id);
+    c.x[0] = uint64_t(n);
+}
+
+void GetVibrationDeviceInfo(CPU& c) {  // (VibrationDeviceInfo* out, const VibrationDeviceHandle&)
+    uint32_t h = ld<uint32_t>(c.x[1]);
+    st<uint32_t>(c.x[0], 1);                              // a linear resonant actuator
+    st<uint32_t>(c.x[0] + 4, (h >> 16 & 0xFF) ? 2u : 1u);  // right / left
+    c.x[0] = 0;
+}
+
+// One VibrationValue for a device (from SendVibrationValue, or hid's SendVibrationValues below).
+void vibrate(uint32_t h, uint64_t value) {
+    if (!rumble_on()) return;
+    if ((h & 0xFF) != kVibrationType || (h >> 8 & 0xFF) != 0) return;  // player 1's controller only
+    int side = (h >> 16 & 0xFF) ? 1 : 0;
+    float amp_low = ld<float>(value), amp_high = ld<float>(value + 8);
+    float low = 0, high = 0;
+    {
+        std::lock_guard lk(g_vibration_lock);
+        g_band[side][0] = std::clamp(amp_low, 0.0f, 1.0f);
+        g_band[side][1] = std::clamp(amp_high, 0.0f, 1.0f);
+        low = std::max(g_band[0][0], g_band[1][0]);
+        high = std::max(g_band[0][1], g_band[1][1]);
+        g_vibration_sends++;
+        if (amp_low > 0 || amp_high > 0) g_vibration_nonzero++;
+        if (g_vibration_sends % 2000 == 1)
+            log("hid: vibration values: %llu sent, %llu not zero", (unsigned long long)g_vibration_sends,
+                (unsigned long long)g_vibration_nonzero);
+    }
+    plat::rumble(low, high);
+}
+
+void SendVibrationValue(CPU& c) {  // (const VibrationDeviceHandle&, const VibrationValue&)
+    vibrate(ld<uint32_t>(c.x[0]), c.x[1]);
+}
+
+// The hid service itself, for what the SDK sends over IPC rather than through the HLE'd functions: cmd 206
+// SendVibrationValues (AppletResourceUserId; X buffers: VibrationDeviceHandle[], VibrationValue[]), ~200 per second
+// while the game plays. Every other command answers as the generic stub did (success, no output).
+ServiceRegistrar r_hid("hid", [] {
+    auto s = std::make_shared<Service>("hid");
+    s->cmds[206] = [](IpcCtx& c) {
+        Buffer handles = c.in_buf(0), values = c.in_buf(1);
+        uint64_t n = std::min(handles.size / 4, values.size / 16);
+        for (uint64_t k = 0; k < n; k++) vibrate(ld<uint32_t>(handles.addr + 4 * k), values.addr + 16 * k);
+        return 0u;
+    };
+    return s;
+});
 void ShowControllerSupport(CPU& c) {                     // (ControllerSupportResultInfo*, const Arg&)
     st<int8_t>(c.x[0], 1);        // player count
     st<uint32_t>(c.x[0] + 4, 0);  // selected npad id: No1
@@ -220,7 +303,7 @@ NX_HLE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", GetNpadState);
 NX_HLE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", GetNpadState);
 NX_HLE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", GetVibrationDeviceHandles);
 NX_HLE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", noop);
-NX_HLE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", noop);
+NX_HLE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", GetVibrationDeviceInfo);
 NX_HLE("_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE", ShowControllerSupport);
 // SDK 16 (Super Mario Bros. Wonder)
 NX_HLE("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj", GetNpadStatesFullKey);
@@ -239,7 +322,7 @@ NX_HLE("_ZN2nn3hid21StartLrAssignmentModeEv", noop);
 NX_HLE("_ZN2nn3hid20StopLrAssignmentModeEv", noop);
 NX_HLE("_ZN2nn3hid20GetNpadJoyAssignmentERKj", zero);  // dual
 NX_HLE("_ZN2nn3hid20IsVibrationPermittedEv", one);
-NX_HLE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", noop);
+NX_HLE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", SendVibrationValue);
 NX_HLE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", noop);
 NX_HLE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", noop);
 NX_HLE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", zero);

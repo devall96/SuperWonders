@@ -1,6 +1,6 @@
 # SuperWonders — Super Mario Bros. Wonder PC Recompilation
 
-I'm working on SuperWonders, an experimental Windows x64 static recompilation of *Super Mario Bros. Wonder* (Nintendo Switch, base version 1.0.0) for native execution on PC. I started from the DKB/TOTK recompilation framework and have been adapting its runtime and graphics support for Wonder. The Windows graphics backend uses Vulkan.
+I'm working on SuperWonders, an experimental Windows and Linux x86-64 static recompilation of *Super Mario Bros. Wonder* (Nintendo Switch, base version 1.0.0) for native execution on PC. I started from the DKB/TOTK recompilation framework and have been adapting its runtime and graphics support for Wonder. The graphics backend uses Vulkan.
 
 This repository contains source code and project documentation. It does not contain the builder package, the game, game assets, a game dump, firmware, or a compiled game. The separate Windows GUI Builder is distributed through [GitHub Releases](https://github.com/vfjoo888/SuperWonders/releases).
 
@@ -14,15 +14,17 @@ This repository contains source code and project documentation. It does not cont
 - The Audio section lets me adjust game volume and select the game language. The settings menu itself is available in English, Italian, German, and French.
 - The Controls section has Xbox/DualSense and Nintendo button-layout presets. It also lets me remap keyboard keys and controller buttons. The Windows runtime includes keyboard, XInput, and DualSense input support.
 - The Overlay section has separate toggles for FPS, 1% lows, game speed, and a frametime graph, with four corner-position options.
-- The System section includes a configurable process memory limit and a Low VRAM profile. The memory limit controls the process's system-memory guard; it is not a dedicated VRAM limit. The Low VRAM profile can store decoded ASTC textures as BC3 instead of expanding them to RGBA8 when the GPU does not support ASTC. This can reduce texture memory use, with a possible image-quality tradeoff.
+- The System section includes a configurable memory cleanup threshold and a Low VRAM profile. Crossing the threshold asks Vulkan to release unused reusable images; it does not close the game or cap memory used by live resources, and it is not a dedicated VRAM limit. The Low VRAM profile can store decoded ASTC textures as BC3 instead of expanding them to RGBA8 when the GPU does not support ASTC. This can reduce texture memory use, with a possible image-quality tradeoff.
 - I prepared a separate Windows GUI Builder package. Users provide their own extracted ExeFS/RomFS folders.
 - I changed the Windows build so the game can be started directly from its executable, with an orange-flower application icon.
+- I added Linux x86-64 support and a launcher that can prepare the game from the user's own extracted files.
+- I added frame-rate caps up to 144 FPS, FSR 1 upscaling, FXAA, anisotropic filtering, game-language selection, and controller rumble support.
 
 ## Testing and compatibility
 
 I have tested the project on a Windows PC with an **NVIDIA GeForce RTX 5060 Ti**. So far, I have played only in the tutorial area and W1. I haven't comprehensively tested the rest of the game, including later worlds, courses, cutscenes, and edge cases.
 
-**AMD and Intel graphics cards have not been tested**, so I can't confirm compatibility with them. Other systems and GPUs may behave differently. Controller rumble is not currently supported.
+**AMD and Intel graphics cards have not been tested**, so I can't confirm compatibility with them. Other systems and GPUs may behave differently. Linux support is available, but compatibility testing remains limited.
 
 The recompilation targets the game's base version **1.0.0**. The builder uses the extracted folders provided by the user and does not identify the game version automatically. Updates and DLC are not supported.
 
@@ -40,15 +42,17 @@ These are preliminary requirements inferred from the build and runtime, not a gu
 
 I'm planning to add support for ultrawide **21:9** and super-ultrawide **32:9** displays.
 
-A 4k internal resolution option is on the way.
-
-A Linux port may be a future project after I have improved and tested the Windows experience. I don't have a Linux system, so I will need someone to test it actively. 
+Linux support is available; broader testing across distributions and graphics drivers is still needed.
 
 Android is substantially more complicated and may be considered later.
 
 ## AI assistance
 
 I used AI tools extensively to help write and revise the code, build scripts, and documentation. I directed the work and ran the builds and gameplay checks described above. AI-assisted code can still have bugs; the limited testing coverage is part of the project's current status.
+
+## Contributor credits
+
+Thanks to [devall96](https://github.com/devall96) for the work shared in pull requests #20–#33. I reviewed and incorporated selected ideas and implementations into my local source, including asynchronous pipeline preparation and cache saving, Vulkan validation fixes, Linux support, graphics pipeline library support, graphics and frame-rate options, launcher and release tooling, and performance/replay diagnostics. The published source is my integrated project state; the pull requests themselves were not merged as a batch. Pull request #25's feedback-loop copy change was not included.
 
 ## Getting a local build
 

@@ -70,13 +70,9 @@ static void report_threads() {
     }
 }
 
-static void dump_threads();
-
 static void watchdog(void*) {
     uint64_t last = 0, since = plat::monotonic_ns();
-    const uint64_t started = since;
     bool reported = false;
-    int startup_reports = 0;
     for (;;) {
         plat::sleep_ns(1'000'000'000);
         // On request: a file named dump_threads in the data folder (e.g. adb shell touch .../dump_threads). Frames
@@ -120,16 +116,6 @@ static void watchdog(void*) {
             since = now;
             reported = false;
             continue;
-        }
-        // No first frame yet: a hang before the first present (seen once, after "fs: mounted save") left no clue in
-        // the log. At 60, 120 and 180 s, where every guest thread is and its call chain. A first run's shader
-        // preparation also comes before the first frame and takes minutes: check its progress lines first.
-        if (!f && startup_reports < 3 && now - started > uint64_t(startup_reports + 1) * 60'000'000'000ull) {
-            startup_reports++;
-            log("hang: no first frame %d s after start (a first run's shader preparation also takes this long); threads:",
-                startup_reports * 60);
-            report_threads();
-            dump_threads();
         }
         if (f && !reported && now - since > 5'000'000'000ull) {
             reported = true;

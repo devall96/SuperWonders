@@ -1,0 +1,13 @@
+# The menus from the fixture save (fixtures/save-course11) into course 1-1, as Mario. Frames count from each anchor:
+# @title is the title music starting, @map the world map's first stream. Each press has ~2x the slack it needs.
+@title
+50:L+R:24          # the title: press L+R
+290:A:12           # Select a User: the fixture's user
+410:A:12           # Select Number of Players: One
+520:DUP:8          # Characters: the cursor starts on Random; up into the row (Blue Toad)
+540/16x5:DLEFT:8   # then five left to Mario (more wraps round to Nabbit, Yoshi...)
+720:A:12           # Mario
+840:A:12           # "Play as this character?" OK
+@map
+40:DRIGHT:36       # walk to the 1-1 node
+210:A:12           # enter course 1-1
