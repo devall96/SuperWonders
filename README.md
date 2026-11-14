@@ -22,9 +22,9 @@ This repository contains source code and project documentation. It does not cont
 
 ## Testing and compatibility
 
-I have tested the project on a Windows PC with an **NVIDIA GeForce RTX 5060 Ti**. So far, I have played only in the tutorial area and W1. I haven't comprehensively tested the rest of the game, including later worlds, courses, cutscenes, and edge cases.
+I have tested the project on a Windows and Linux PC with an **NVIDIA GeForce RTX 5060 Ti**. A contributor tested on his AMD RX 9070XT on both Windows and Linux. 
 
-**AMD and Intel graphics cards have not been tested**, so I can't confirm compatibility with them. Other systems and GPUs may behave differently. Linux support is available, but compatibility testing remains limited.
+**Intel graphics cards have not been tested**, so I can't confirm compatibility with them. Other systems and GPUs may behave differently. Linux support is available.
 
 The recompilation targets the game's base version **1.0.0**. The builder uses the extracted folders provided by the user and does not identify the game version automatically. Updates and DLC are not supported.
 
@@ -39,10 +39,6 @@ I have not established a formally tested minimum yet. The current Windows build 
 These are preliminary requirements inferred from the build and runtime, not a guarantee that every compatible-looking PC will run the game well. Testing is still limited to the hardware and game area described above.
 
 ## Future features
-
-I'm planning to add support for ultrawide **21:9** and super-ultrawide **32:9** displays.
-
-Linux support is available; broader testing across distributions and graphics drivers is still needed.
 
 Android is substantially more complicated and may be considered later.
 
