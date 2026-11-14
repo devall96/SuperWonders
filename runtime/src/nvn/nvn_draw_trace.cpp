@@ -211,7 +211,7 @@ void frame_sig_draw(const Targets& t, bool indexed, uint32_t count, uint32_t ins
             if (img && img->rendered && watch.find('+') != std::string::npos) s += explain_texture_slot(handles[k]);
         }
         for (int n = 0; n < 18; n++)
-            if (const Range& r = g_state.uniforms[4][n]; r.address && r.size)
+            if (const Range& r = g_state.uniforms[1][n]; r.address && r.size)
                 if (const uint8_t* p = guest_bytes(r.address)) {
                     char b[64];
                     std::snprintf(b, sizeof b, " c%d=%llx:%08x", n, (unsigned long long)r.address,
@@ -242,7 +242,7 @@ void frame_sig_draw(const Targets& t, bool indexed, uint32_t count, uint32_t ins
     if (indexed || count > 6 || instances != 1 || g_sig.passes.size() > 2000) return;
     uint32_t u = 2166136261u;
     for (int n = 0; n < 18; n++)
-        if (const Range& r = g_state.uniforms[4][n]; r.address && r.size)
+        if (const Range& r = g_state.uniforms[1][n]; r.address && r.size)
             if (const uint8_t* p = guest_bytes(r.address)) u = fnv(u, p, std::min<uint64_t>(r.size, 4096));
     char b[64];
     std::snprintf(b, sizeof b, " %.6s>%llx:%08x", fs ? fs->hash.c_str() : "-",
@@ -292,6 +292,32 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             fs ? fs->hash.c_str() : "-", indexed ? "indexed" : "arrays", count, instances);
     trace_cube_draw(t, vs, fs, tex_bindings, handles);
     frame_sig_draw(t, indexed, count, instances, fs, tex_bindings, handles);
+    // NX_TRACE_FRAME=<frame>: every draw of that frame, one line each: shaders, target, depth test, and each sampled
+    // texture (guest and host size, NVN format, filter, whether a pass rendered it and when).
+    static const uint64_t trace_frame = std::getenv("NX_TRACE_FRAME") ? std::strtoull(std::getenv("NX_TRACE_FRAME"), nullptr, 10) : 0;
+    if (trace_frame && g_frame.load() == trace_frame) {
+        GpuImage* target = t.color_count && t.colors[0] ? image_of(t.colors[0]) : nullptr;
+        std::string s;
+        for (size_t k = 0; k < tex_bindings.size() && k < handles.size(); k++) {
+            uint64_t texture = 0;
+            SamplerInfo si;
+            texture_for(handles[k], texture, si);
+            Texture* tx = texture ? get<Texture>(texture) : nullptr;
+            GpuImage* img = texture ? image_of(texture) : nullptr;
+            char b[200];
+            std::snprintf(b, sizeof b, " t%zu(b%u%s)=%ux%u/%ux%u f%x min%u mag%u cmp%u %s%llu", k,
+                          tex_bindings[k].second ? tex_bindings[k].second->binding : 0,
+                          tex_bindings[k].second && tex_bindings[k].second->image.depth ? "d" : "", tx ? tx->width : 0,
+                          tx ? tx->height : 0, img ? img->width : 0, img ? img->height : 0, img ? img->nvn_format : 0,
+                          si.min_filter, si.mag_filter, si.compare_mode, img && img->rendered ? "R" : "-",
+                          (unsigned long long)(img && img->rendered ? img->rendered_at : 0));
+            s += b;
+        }
+        log("tframe %llu draw %llu vs %.8s fs %.8s n%u x%u -> %ux%u c%u d%s z%u/%u/%u%s", (unsigned long long)trace_frame,
+            (unsigned long long)g_stats.done, vs ? vs->hash.c_str() : "-", fs ? fs->hash.c_str() : "-", count, instances,
+            target ? target->width : 0, target ? target->height : 0, t.color_count, t.depth ? "y" : "n",
+            g_state.depth.depth_test, g_state.depth.depth_write, g_state.depth.depth_func, s.c_str());
+    }
     // NX_TRACE_SHADOW_AUX=1: inspect the screen-space auxiliary shadow shader's
     // c3[18] coordinate transform and its fp_t_tcb_20 binding. This is diagnostic
     // only: it does not change shader inputs or rendering state.

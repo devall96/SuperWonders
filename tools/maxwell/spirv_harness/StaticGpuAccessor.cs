@@ -172,7 +172,16 @@ namespace SpirvHarness
         }
 
         // Host = MoltenVK on the Apple M1 (docs/nvn/WONDER.md), with the choices Ryujinx's Vulkan backend makes.
-        public bool QueryHostReducedPrecision() => true;                 // Ryujinx does this on MoltenVK
+        // Ryujinx does this on MoltenVK. NX_HOST_REDUCED_PRECISION=0: false, so every float op gets NoContraction and
+        // a depth pre-pass and a colour pass tested EQUAL compute the same position (Savage Wind
+        // runtime/nvn/vulkan/spirv.c:98-101, foliage flickered black; TotK docs/maxwell.md row 1.8).
+        public bool QueryHostReducedPrecision() =>
+            System.Environment.GetEnvironmentVariable("NX_HOST_REDUCED_PRECISION") != "0";
+        // NX_HOST_GATHER_BIAS=<bits>: Ryujinx's texture-gather coordinate bias for hosts that are not NVIDIA (their
+        // subTexelPrecisionBits, 8 on AMD); 0 or unset: no bias, as before. The TotK and Savage Wind recomps set it on
+        // every non-NVIDIA GPU (yuzu did it for BotW's shadows on AMD).
+        public int QueryHostGatherBiasPrecision() =>
+            int.TryParse(System.Environment.GetEnvironmentVariable("NX_HOST_GATHER_BIAS"), out int bits) ? bits : 0;
         public bool QueryHostSupportsGeometryShader() => false;
         public bool QueryHostSupportsGeometryShaderPassthrough() => false;
         public bool QueryHostSupportsTransformFeedback() => false;
