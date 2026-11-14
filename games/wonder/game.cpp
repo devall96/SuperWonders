@@ -58,7 +58,14 @@ static void trace_screen_globals() {
 
 }  // namespace
 
-void game::after_init() { trace_screen_globals(); }
+namespace wonder {
+void menu_init();
+}
+
+void game::after_init() {
+    trace_screen_globals();
+    wonder::menu_init();
+}
 void game::renderer_start() {}
 void game::first_frame() {}
 

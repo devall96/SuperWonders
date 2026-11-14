@@ -23,6 +23,7 @@ using namespace plat;
 
 constexpr uint32_t kStyleFullKey = 1u << 0;
 uint64_t g_sampling = 0;
+std::atomic<uint64_t> g_last_buttons{0};  // hid_buttons()
 
 // Scripted input for automated runs: NX_INPUT="3300:A,3900:A,4200:Down" holds the button for 8 frames from the
 // given presented frame.
@@ -70,6 +71,7 @@ PadState read() {
     if (p.rx > t) p.buttons |= kStickRRight;
     if (p.ry > t) p.buttons |= kStickRUp;
     if (p.ry < -t) p.buttons |= kStickRDown;
+    g_last_buttons.store(p.buttons, std::memory_order_relaxed);
     return p;
 }
 
@@ -204,6 +206,8 @@ void ShowControllerSupport(CPU& c) {                     // (ControllerSupportRe
 void noop(CPU& c) { c.x[0] = 0; }
 
 }  // namespace
+
+uint64_t hid_buttons() { return g_last_buttons.load(std::memory_order_relaxed); }
 
 NX_HLE("_ZN2nn3hid14InitializeNpadEv", noop);
 NX_HLE("_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", noop);
