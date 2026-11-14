@@ -8,8 +8,11 @@
 #include <atomic>
 #include <vector>
 
+#include "nvn_pipeline.h"
+#include "nvn_pipeline_async.h"
 #include "nvn_vk.h"
 #include "platform.h"
+#include "frametrace.h"
 
 namespace nx::nvn {
 
@@ -26,15 +29,19 @@ uint64_t g_pipelines = 0, g_pipeline_ns = 0, g_astc = 0, g_astc_ns = 0;
 
 void save_pipeline_cache_at_exit() { pipeline_cache_save(true); }
 
-void save_pipeline_cache(bool force) {
-    if (!g_cache || !g_cache_dirty.load(std::memory_order_acquire)) return;
+std::atomic<bool> g_cache_saving{false};
+
+// On the background writer (periodic saves) or, at shutdown, on the caller after the writer is idle.
+void write_pipeline_cache(bool force) {
+    // Cleared first: a pipeline created while the data is read marks it dirty again for the next save.
+    g_cache_dirty.store(false, std::memory_order_release);
     size_t n = 0;
-    if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, nullptr) != VK_SUCCESS || !n) return;
+    if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, nullptr) != VK_SUCCESS || !n) return note_pipeline_cache_changed();
     // Vulkan drivers generally grow the serialized cache as new entries are added. Avoid rewriting a large cache
     // every few seconds when its serialized size is unchanged; the explicit shutdown flush forces same-size updates.
-    if (!force && n <= g_saved_size) return;
+    if (!force && n <= g_saved_size) return note_pipeline_cache_changed();  // still owed: the shutdown save writes it
     std::vector<uint8_t> data(n);
-    if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, data.data()) != VK_SUCCESS) return;
+    if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, data.data()) != VK_SUCCESS) return note_pipeline_cache_changed();
     std::string tmp = g_path + ".tmp";
     if (FILE* f = plat::fopen_utf8(tmp, "wb")) {
         bool ok = std::fwrite(data.data(), 1, n, f) == n;
@@ -42,10 +49,25 @@ void save_pipeline_cache(bool force) {
         std::remove(g_path.c_str());
         if (ok && std::rename(tmp.c_str(), g_path.c_str()) == 0) {
             g_saved_size = n;
-            g_cache_dirty.store(false, std::memory_order_release);
             log("nvn/vk: pipeline cache saved (%zu bytes)%s", n, force ? " at shutdown" : "");
+            return;
         }
     }
+    note_pipeline_cache_changed();  // not written: try again next time
+}
+
+void save_pipeline_cache(bool force) {
+    if (!g_cache || !g_cache_dirty.load(std::memory_order_acquire)) return;
+    if (force) {
+        wait_background_writes();
+        write_pipeline_cache(true);
+        return;
+    }
+    if (g_cache_saving.exchange(true)) return;  // the last one is still being written
+    background_write([] {
+        write_pipeline_cache(false);
+        g_cache_saving.store(false);
+    });
 }
 
 }  // namespace
@@ -57,7 +79,9 @@ VkPipelineCache pipeline_cache() {
     VkPhysicalDeviceProperties p{};
     p_vkGetPhysicalDeviceProperties(vk_physical(), &p);
     char name[64];
-    std::snprintf(name, sizeof name, "/pipelines_%04x_%04x.bin", p.vendorID, p.deviceID);
+    // GPL dynamic mode (nvn_pipeline.cpp) has its own file: the two modes' pipelines never share our cache.
+    std::snprintf(name, sizeof name, "/pipelines_%s%04x_%04x.bin", gpl_dynamic_state() ? "gpl_" : "", p.vendorID,
+                  p.deviceID);
     g_path = plat::data_root() + name;
     std::vector<uint8_t> data;
     if (FILE* f = plat::fopen_utf8(g_path, "rb")) {
@@ -85,18 +109,24 @@ VkPipelineCache pipeline_cache() {
 void pipeline_cache_save(bool force) { save_pipeline_cache(force); }
 
 void note_pipeline_cache_changed() { g_cache_dirty.store(true, std::memory_order_release); }
-void note_pipeline_created(uint64_t ns) { note_pipeline_cache_changed(); g_pipelines++, g_pipeline_ns += ns; }
-void note_astc_decoded(uint64_t ns) { g_astc++, g_astc_ns += ns; }
+void note_pipeline_created(uint64_t ns) {
+    note_pipeline_cache_changed();
+    g_pipelines++, g_pipeline_ns += ns;
+    ft::add(ft::kPipelines), ft::add(ft::kPipelineNs, ns);
+}
+void note_astc_decoded(uint64_t ns) { g_astc++, g_astc_ns += ns, ft::add(ft::kAstc), ft::add(ft::kAstcNs, ns); }
 
 // One line per timing window (nvn_vk.cpp log_timing): what the replay created, and the time it took.
 void creation_log(uint64_t frames) {
-    if (g_pipelines || g_astc)
-        log("nvn/vk: created over %llu frames: %llu pipelines (%.1f ms), %llu ASTC textures decoded (%.1f ms)",
+    if (g_pipelines || g_astc || g_pipelines_skipped)
+        log("nvn/vk: created over %llu frames: %llu pipelines (%.1f ms), %llu ASTC textures decoded (%.1f ms), "
+            "%llu draws skipped while compiling",
             (unsigned long long)frames, (unsigned long long)g_pipelines, double(g_pipeline_ns) / 1e6,
-            (unsigned long long)g_astc, double(g_astc_ns) / 1e6);
-    g_pipelines = g_pipeline_ns = g_astc = g_astc_ns = 0;
+            (unsigned long long)g_astc, double(g_astc_ns) / 1e6, (unsigned long long)g_pipelines_skipped);
+    gpl_log();
+    g_pipelines = g_pipeline_ns = g_astc = g_astc_ns = g_pipelines_skipped = 0;
     static uint64_t windows = 0;
-    if (++windows % 10 == 0) pipeline_cache_save(), save_pipeline_keys();
+    if (++windows % 10 == 0) pipeline_cache_save(), save_pipeline_keys();  // on the background writer
 }
 
 }  // namespace nx::nvn

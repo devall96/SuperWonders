@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -25,6 +26,9 @@
 #define _WIN32_WINNT 0x0A00
 #endif
 #include <windows.h>
+#include <windowsx.h>
+#include <shellapi.h>
+#include <shobjidl.h>
 #include <xaudio2.h>
 #include <xinput.h>
 #include <SDL3/SDL.h>
@@ -38,6 +42,7 @@
 
 #include "kernel.h"
 #include "nvn/nvn_vk.h"
+#include "overlay/overlay.h"
 #include "pc_menu_win.h"
 #include "svc_am.h"
 #include "platform.h"
@@ -82,7 +87,11 @@ void start_thread(ThreadFn fn, void* arg, size_t stack_size) {
 }
 
 void exit_thread() { ExitThread(0); }
-void exit_process(int code) { nx::nvn::flush_pipeline_cache(); ExitProcess(UINT(code)); }
+void exit_process(int code) {
+    nx::nvn::flush_pipeline_cache();
+    std::fflush(stderr);  // log_line buffers redirected stderr to avoid periodic render-thread stalls.
+    ExitProcess(UINT(code));
+}
 void sleep_ns(int64_t ns) {
     // A high-resolution waitable timer (Windows 10 1803+): Sleep rounds to the system tick (1 to 15.6 ms), and the
     // 60 Hz pacing jittered by that much.
@@ -187,7 +196,16 @@ bool make_dirs(const std::string& path) {
     return !ec;
 }
 
-void log_line(const char* line) { std::fprintf(stderr, "%s\n", line); }
+void log_line(const char* line) {
+    static const bool write_stderr = [] {
+        HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+        if (!h || h == INVALID_HANDLE_VALUE) return false;
+        if (GetFileType(h) != FILE_TYPE_CHAR && !std::getenv("NX_STDERR_UNBUFFERED"))
+            std::setvbuf(stderr, nullptr, _IOFBF, 64 * 1024);
+        return true;
+    }();
+    if (write_stderr) std::fprintf(stderr, "%s\n", line);
+}
 
 std::string data_root() {
     const char* r = std::getenv("NX_DATA_ROOT");
@@ -210,7 +228,8 @@ static std::array<std::atomic<int>, kPcControlCount> g_controller_bindings{};
 static std::atomic<HWND> g_metrics_window{nullptr};
 static std::atomic<bool> g_metrics_enabled{false}, g_metric_fps{true}, g_metric_one_percent_low{true};
 static std::atomic<bool> g_metric_game_speed{true}, g_metric_frametime_graph{true};
-static std::atomic<int> g_metrics_position{0}, g_game_present_interval{1};
+static std::atomic<int> g_metrics_position{0};
+static std::atomic<double> g_game_speed{100.0};
 static constexpr size_t kFrameHistory = 300;
 static std::mutex g_metrics_mutex;
 static std::array<double, kFrameHistory> g_frame_intervals_ms{};
@@ -222,6 +241,86 @@ static constexpr uint64_t kPadActionBits[kPcControlCount] = {
 
 static void metrics_reposition();
 
+// ---- the Dear ImGui overlay menu (overlay/; NX_IMGUI_MENU=0: the Win32 menu and metrics window as before) ----------
+
+static overlay::Settings to_overlay(const PcMenuState& s) {
+    overlay::Settings o;
+    o.width = s.width, o.height = s.height, o.internal_resolution = s.internal_resolution, o.volume = s.volume;
+    o.language = s.language, o.game_language = s.game_language, o.memory_limit_gb = s.memory_limit_gb;
+    o.controller_preset = s.controller_preset, o.muted = s.muted, o.fullscreen = s.fullscreen;
+    o.always_on_top = s.always_on_top, o.metrics_enabled = s.metrics_enabled, o.low_vram_profile = s.low_vram_profile;
+    o.metric_fps = s.metric_fps, o.metric_one_percent_low = s.metric_one_percent_low;
+    o.metric_game_speed = s.metric_game_speed, o.metric_frametime_graph = s.metric_frametime_graph;
+    o.overlay_position = s.overlay_position, o.controller_custom_mask = s.controller_custom_mask;
+    o.upscaler = s.upscaler, o.fsr_sharpness = s.fsr_sharpness, o.antialiasing = s.antialiasing;
+    o.anisotropy = s.anisotropy, o.rumble = s.rumble, o.vsync = s.vsync, o.frame_cap = s.frame_cap;
+    for (size_t i = 0; i < kPcControlCount; ++i)
+        o.keyboard_bindings[i] = s.keyboard_bindings[i], o.controller_bindings[i] = s.controller_bindings[i];
+    return o;
+}
+
+static PcMenuState from_overlay(const overlay::Settings& o) {
+    PcMenuState s = g_pc_settings;
+    s.width = o.width, s.height = o.height, s.internal_resolution = o.internal_resolution, s.volume = o.volume;
+    s.language = o.language, s.game_language = o.game_language, s.memory_limit_gb = o.memory_limit_gb;
+    s.controller_preset = o.controller_preset, s.muted = o.muted, s.fullscreen = o.fullscreen;
+    s.always_on_top = o.always_on_top, s.metrics_enabled = o.metrics_enabled, s.low_vram_profile = o.low_vram_profile;
+    s.metric_fps = o.metric_fps, s.metric_one_percent_low = o.metric_one_percent_low;
+    s.metric_game_speed = o.metric_game_speed, s.metric_frametime_graph = o.metric_frametime_graph;
+    s.overlay_position = o.overlay_position, s.controller_custom_mask = o.controller_custom_mask;
+    s.upscaler = o.upscaler, s.fsr_sharpness = o.fsr_sharpness, s.antialiasing = o.antialiasing;
+    s.anisotropy = o.anisotropy, s.rumble = o.rumble, s.vsync = o.vsync, s.frame_cap = o.frame_cap;
+    for (size_t i = 0; i < kPcControlCount; ++i)
+        s.keyboard_bindings[i] = o.keyboard_bindings[i], s.controller_bindings[i] = o.controller_bindings[i];
+    return s;
+}
+
+// The overlay applies on the presenting thread; window changes belong to the window thread, so they go there.
+constexpr UINT kOverlayApplyMessage = WM_APP + 60;
+struct OverlayApply {
+    PcMenuState state;
+    bool persist;
+};
+
+static void overlay_apply(const overlay::Settings& s, bool persist) {
+    auto* a = new OverlayApply{from_overlay(s), persist};
+    if (!g_window || !PostMessageW(g_window, kOverlayApplyMessage, 0, reinterpret_cast<LPARAM>(a))) delete a;
+}
+
+static const char* overlay_key_name(int vk) {
+    thread_local char name[64];
+    UINT scan = MapVirtualKeyW(UINT(vk), MAPVK_VK_TO_VSC);
+    LONG l = LONG(scan) << 16;
+    if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN || vk == VK_INSERT || vk == VK_DELETE ||
+        vk == VK_HOME || vk == VK_END || vk == VK_PRIOR || vk == VK_NEXT || vk == VK_RCONTROL || vk == VK_RMENU)
+        l |= 1 << 24;  // extended keys
+    if (GetKeyNameTextA(l, name, sizeof name) > 0) return name;
+    std::snprintf(name, sizeof name, "VK %d", vk);
+    return name;
+}
+
+static overlay::Key overlay_key(WPARAM vk) {
+    switch (vk) {
+        case VK_TAB: return overlay::KeyTab;
+        case VK_LEFT: return overlay::KeyLeft;
+        case VK_RIGHT: return overlay::KeyRight;
+        case VK_UP: return overlay::KeyUp;
+        case VK_DOWN: return overlay::KeyDown;
+        case VK_PRIOR: return overlay::KeyPageUp;
+        case VK_NEXT: return overlay::KeyPageDown;
+        case VK_HOME: return overlay::KeyHome;
+        case VK_END: return overlay::KeyEnd;
+        case VK_RETURN: return overlay::KeyEnter;
+        case VK_ESCAPE: return overlay::KeyEscape;
+        case VK_BACK: return overlay::KeyBackspace;
+        case VK_DELETE: return overlay::KeyDelete;
+        case VK_SPACE: return overlay::KeySpace;
+        case VK_SHIFT: return overlay::KeyShift;
+        case VK_CONTROL: return overlay::KeyCtrl;
+        default: return overlay::KeyNone;
+    }
+}
+
 static bool metrics_has_content() {
     return g_metrics_enabled.load(std::memory_order_relaxed) &&
            (g_metric_fps.load(std::memory_order_relaxed) || g_metric_one_percent_low.load(std::memory_order_relaxed) ||
@@ -230,7 +329,7 @@ static bool metrics_has_content() {
 }
 
 static void apply_metrics_settings(const PcMenuState& state) {
-    g_metrics_enabled.store(state.metrics_enabled, std::memory_order_relaxed);
+    g_metrics_enabled.store(state.metrics_enabled && !overlay::enabled(), std::memory_order_relaxed);
     g_metric_fps.store(state.metric_fps, std::memory_order_relaxed);
     g_metric_one_percent_low.store(state.metric_one_percent_low, std::memory_order_relaxed);
     g_metric_game_speed.store(state.metric_game_speed, std::memory_order_relaxed);
@@ -265,7 +364,11 @@ static void save_pc_settings() {
          << "\nmetric_game_speed=" << g_pc_settings.metric_game_speed
          << "\nmetric_frametime_graph=" << g_pc_settings.metric_frametime_graph
          << "\noverlay_position=" << g_pc_settings.overlay_position
-         << "\ncontroller_custom_mask=" << g_pc_settings.controller_custom_mask << '\n';
+         << "\ncontroller_custom_mask=" << g_pc_settings.controller_custom_mask
+         << "\nupscaler=" << g_pc_settings.upscaler << "\nfsr_sharpness=" << g_pc_settings.fsr_sharpness
+         << "\nantialiasing=" << g_pc_settings.antialiasing << "\nanisotropy=" << g_pc_settings.anisotropy
+         << "\nrumble=" << g_pc_settings.rumble << "\nvsync=" << g_pc_settings.vsync
+         << "\nframe_cap=" << g_pc_settings.frame_cap << '\n';
     for (size_t i = 0; i < kPcControlCount; ++i)
         file << "keyboard_" << i << '=' << g_pc_settings.keyboard_bindings[i] << '\n'
              << "controller_" << i << '=' << g_pc_settings.controller_bindings[i] << '\n';
@@ -278,7 +381,7 @@ static void load_pc_settings() {
         int value = 0;
         if (std::sscanf(line.c_str(), "width=%d", &value) == 1 && value >= 640 && value <= 7680) g_pc_settings.width = value;
         else if (std::sscanf(line.c_str(), "height=%d", &value) == 1 && value >= 360 && value <= 4320) g_pc_settings.height = value;
-        else if (std::sscanf(line.c_str(), "internal_resolution=%d", &value) == 1) g_pc_settings.internal_resolution = std::clamp(value, 0, 4);
+        else if (std::sscanf(line.c_str(), "internal_resolution=%d", &value) == 1) g_pc_settings.internal_resolution = std::clamp(value, 0, 6);
         else if (std::sscanf(line.c_str(), "volume=%d", &value) == 1) g_pc_settings.volume = std::clamp(value, 0, 100);
         else if (std::sscanf(line.c_str(), "muted=%d", &value) == 1) g_pc_settings.muted = value != 0;
         else if (std::sscanf(line.c_str(), "fullscreen=%d", &value) == 1) g_pc_settings.fullscreen = value != 0;
@@ -300,6 +403,19 @@ static void load_pc_settings() {
         else if (std::sscanf(line.c_str(), "overlay_position=%d", &value) == 1)
             g_pc_settings.overlay_position = std::clamp(value, 0, 3);
         else if (std::sscanf(line.c_str(), "controller_custom_mask=%u", &g_pc_settings.controller_custom_mask) == 1) {}
+        else if (std::sscanf(line.c_str(), "upscaler=%d", &value) == 1) g_pc_settings.upscaler = std::clamp(value, 0, 1);
+        else if (std::sscanf(line.c_str(), "fsr_sharpness=%d", &value) == 1)
+            g_pc_settings.fsr_sharpness = std::clamp(value, 0, 200);
+        else if (std::sscanf(line.c_str(), "antialiasing=%d", &value) == 1)
+            g_pc_settings.antialiasing = std::clamp(value, 0, 1);
+        else if (std::sscanf(line.c_str(), "anisotropy=%d", &value) == 1)
+            g_pc_settings.anisotropy = std::clamp(value, 0, 16);
+        else if (std::sscanf(line.c_str(), "rumble=%d", &value) == 1) g_pc_settings.rumble = std::clamp(value, 0, 100);
+        else if (std::sscanf(line.c_str(), "vsync=%d", &value) == 1) g_pc_settings.vsync = std::clamp(value, 0, 3);
+        else if (std::sscanf(line.c_str(), "frame_cap=%d", &value) == 1)
+            g_pc_settings.frame_cap = value == 30 || value == 60 || value == 90 || value == 120 || value == 144
+                                          ? value
+                                          : 60;
         else {
             int index = -1, binding = -1;
             if (std::sscanf(line.c_str(), "keyboard_%d=%d", &index, &binding) == 2 &&
@@ -315,6 +431,13 @@ static void load_pc_settings() {
     apply_input_bindings(g_pc_settings);
     set_memory_limit_gb(g_pc_settings.memory_limit_gb);
     _putenv_s("NX_LOW_VRAM_PROFILE", g_pc_settings.low_vram_profile ? "1" : "0");
+    nx::nvn::set_fsr(g_pc_settings.upscaler == 1, float(g_pc_settings.fsr_sharpness) / 100.0f);
+    nx::nvn::set_fxaa(g_pc_settings.antialiasing == 1);
+    nx::nvn::set_anisotropy(g_pc_settings.anisotropy);
+    nx::nvn::set_vsync(g_pc_settings.vsync);
+    nx::nvn::set_frame_cap(g_pc_settings.frame_cap);
+    nx::set_native_render_width(g_pc_settings.fullscreen ? uint32_t(GetSystemMetrics(SM_CXSCREEN))
+                                                          : uint32_t(g_pc_settings.width));
 }
 
 static void set_game_volume() {
@@ -398,8 +521,7 @@ static void metrics_paint(HWND h) {
         for (size_t i = 0; i < slow_count; ++i) slow_sum += slow[i];
         if (slow_sum > 0.0) one_low = double(slow_count) * 1000.0 / slow_sum;
     }
-    const int target_interval = std::max(1, g_game_present_interval.load(std::memory_order_relaxed));
-    const double speed = fps * double(target_interval) / 60.0 * 100.0;
+    const double speed = g_game_speed.load(std::memory_order_relaxed);
 
     SetBkMode(dc, TRANSPARENT);
     HFONT font = CreateFontW(-16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
@@ -520,7 +642,7 @@ static void apply_pc_menu(const PcMenuState& state, bool persist) {
     g_pc_settings.width = std::clamp(g_pc_settings.width, 640, 7680);
     g_pc_settings.height = std::clamp(g_pc_settings.height, 360, 4320);
     g_pc_settings.volume = std::clamp(g_pc_settings.volume, 0, 100);
-    g_pc_settings.internal_resolution = std::clamp(g_pc_settings.internal_resolution, 0, 4);
+    g_pc_settings.internal_resolution = std::clamp(g_pc_settings.internal_resolution, 0, 6);
     g_pc_settings.language = std::clamp(g_pc_settings.language, 0, 3);
     g_pc_settings.game_language = std::clamp(g_pc_settings.game_language, 0, 3);
     g_pc_settings.memory_limit_gb = std::clamp(g_pc_settings.memory_limit_gb, 2, 32);
@@ -531,6 +653,11 @@ static void apply_pc_menu(const PcMenuState& state, bool persist) {
     apply_metrics_settings(g_pc_settings);
     set_memory_limit_gb(g_pc_settings.memory_limit_gb);
     _putenv_s("NX_LOW_VRAM_PROFILE", g_pc_settings.low_vram_profile ? "1" : "0");
+    nx::nvn::set_fsr(g_pc_settings.upscaler == 1, float(g_pc_settings.fsr_sharpness) / 100.0f);
+    nx::nvn::set_fxaa(g_pc_settings.antialiasing == 1);
+    nx::nvn::set_anisotropy(g_pc_settings.anisotropy);
+    nx::nvn::set_vsync(g_pc_settings.vsync);
+    nx::nvn::set_frame_cap(g_pc_settings.frame_cap);
     if (g_fullscreen != g_pc_settings.fullscreen) toggle_fullscreen(g_window);
     else if (size_changed && !g_fullscreen) resize_window_client(g_window, g_pc_settings.width, g_pc_settings.height);
     if (topmost_changed && g_window)
@@ -560,17 +687,47 @@ static void toggle_fullscreen(HWND h) {
     g_pc_settings.fullscreen = g_fullscreen;
     if (!g_fullscreen) resize_window_client(h, g_pc_settings.width, g_pc_settings.height);
     pc_menu_sync(g_pc_settings);
+    if (overlay::enabled()) overlay::sync(to_overlay(g_pc_settings));
     save_pc_settings();
 }
 
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
+    if (msg == kOverlayApplyMessage) {
+        std::unique_ptr<OverlayApply> a(reinterpret_cast<OverlayApply*>(l));
+        apply_pc_menu(a->state, a->persist);
+        return 0;
+    }
+    if (overlay::enabled() && overlay::is_open()) {
+        switch (msg) {
+            case WM_KEYDOWN:
+            case WM_KEYUP:
+                if (w == VK_F1 || w == VK_F11) break;  // handled below
+                if (msg == WM_KEYUP || !(l & (1ll << 30))) overlay::key_event(int(w), overlay_key(w), msg == WM_KEYDOWN);
+                return 0;
+            case WM_CHAR:
+                overlay::text_input(uint32_t(w));
+                return 0;
+            case WM_MOUSEMOVE:
+                overlay::mouse_move(float(GET_X_LPARAM(l)), float(GET_Y_LPARAM(l)));
+                return 0;
+            case WM_LBUTTONDOWN: case WM_LBUTTONUP:
+                overlay::mouse_button(0, msg == WM_LBUTTONDOWN);
+                return 0;
+            case WM_RBUTTONDOWN: case WM_RBUTTONUP:
+                overlay::mouse_button(1, msg == WM_RBUTTONDOWN);
+                return 0;
+            case WM_MOUSEWHEEL:
+                overlay::mouse_wheel(float(GET_WHEEL_DELTA_WPARAM(w)) / float(WHEEL_DELTA));
+                return 0;
+        }
+    }
     switch (msg) {
         case WM_MOVE:
         case WM_SIZE:
             metrics_reposition();
             break;
         case WM_PAINT: {
-            if (!g_shader_progress_visible.load(std::memory_order_acquire))
+            if (!g_shader_progress_visible.load(std::memory_order_acquire) || overlay::enabled())
                 return DefWindowProcW(h, msg, w, l);
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(h, &ps);
@@ -622,7 +779,10 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
             ExitProcess(0);
         case WM_KEYDOWN:
             if (w == VK_F1 && !(l & (1ll << 30))) {
-                pc_menu_toggle();
+                if (overlay::enabled())
+                    overlay::toggle();
+                else
+                    pc_menu_toggle();
                 return 0;
             }
             if (w == VK_F11) toggle_fullscreen(h);
@@ -665,7 +825,11 @@ static void window_thread(std::atomic<bool>* ready) {
     g_window = CreateWindowW(wc.lpszClassName, (widen(nx::game::kInfo.title) + L" (Switch recomp)  -  F11: fullscreen").c_str(), style,
                              std::max(0, x), std::max(0, y), w, h, nullptr, nullptr, wc.hInstance, nullptr);
     const char* fullscreen_env = std::getenv("NX_FULLSCREEN");
-    if (!headless() && (g_pc_settings.fullscreen || (fullscreen_env && *fullscreen_env == '1'))) toggle_fullscreen(g_window);
+    // RecompLauncher's Big Picture mode (RECOMPLAUNCHER_MODE=bigpicture: a controller on the couch) starts full screen
+    const char* rl_mode = std::getenv("RECOMPLAUNCHER_MODE");
+    const bool big_picture = rl_mode && std::strcmp(rl_mode, "bigpicture") == 0;
+    if (!headless() && (g_pc_settings.fullscreen || big_picture || (fullscreen_env && *fullscreen_env == '1')))
+        toggle_fullscreen(g_window);
     RECT client{};
     GetClientRect(g_window, &client);
     if (!g_pc_settings.width) g_pc_settings.width = client.right - client.left;
@@ -673,6 +837,12 @@ static void window_thread(std::atomic<bool>* ready) {
     if (g_pc_settings.always_on_top)
         SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     pc_menu_init(g_window, g_pc_settings, apply_pc_menu);
+    if (overlay::enabled()) {
+        overlay::Host host;
+        host.apply = overlay_apply;
+        host.key_name = overlay_key_name;
+        overlay::init(host, to_overlay(g_pc_settings));
+    }
     metrics_init(g_window);
     apply_metrics_settings(g_pc_settings);
     if (!headless()) SetForegroundWindow(g_window);
@@ -699,14 +869,22 @@ void shader_compile_progress(uint64_t compiled, uint64_t total, bool visible) {
     g_shader_compiled.store(compiled, std::memory_order_relaxed);
     g_shader_total.store(total, std::memory_order_relaxed);
     g_shader_progress_visible.store(visible, std::memory_order_release);
-    if (g_window) InvalidateRect(g_window, nullptr, TRUE);
+    // With the ImGui overlay the compile screen is presented through Vulkan (overlay_progress.cpp); painting the window
+    // too would flicker over it.
+    if (g_window && !overlay::enabled()) InvalidateRect(g_window, nullptr, TRUE);
 }
 
 void overlay_game_interval(int interval) {
-    g_game_present_interval.store(std::max(1, interval), std::memory_order_relaxed);
+    overlay::game_interval(interval);
+}
+
+void overlay_game_speed(double percent) {
+    g_game_speed.store(std::clamp(percent, 0.0, 1000.0), std::memory_order_relaxed);
+    overlay::game_speed(percent);
 }
 
 void overlay_presented(uint64_t now_ns) {
+    overlay::presented(now_ns);
     {
         std::lock_guard lock(g_metrics_mutex);
         if (g_previous_present_ns && now_ns > g_previous_present_ns) {
@@ -747,6 +925,23 @@ bool headless() {  // NX_HEADLESS (platform.h)
     return on;
 }
 
+// Player 1's pad for rumble: XInput's first controller, else the SDL gamepad read_pad opened.
+static std::mutex g_gamepad_lock;
+static SDL_Gamepad* g_gamepad = nullptr;
+static std::atomic<bool> g_have_xinput{false};
+
+void rumble(float low, float high) {
+    const float k = float(std::clamp(g_pc_settings.rumble, 0, 100)) / 100.0f;
+    const WORD lo = WORD(std::clamp(low * k, 0.0f, 1.0f) * 65535.0f), hi = WORD(std::clamp(high * k, 0.0f, 1.0f) * 65535.0f);
+    if (g_have_xinput) {
+        XINPUT_VIBRATION v{lo, hi};
+        XInputSetState(0, &v);
+        return;
+    }
+    std::lock_guard lk(g_gamepad_lock);
+    if (g_gamepad) SDL_RumbleGamepad(g_gamepad, lo, hi, 250);
+}
+
 void read_pad(PadState& p) {
     std::array<bool, kPcControlCount> physical{};
     XINPUT_STATE xs{};
@@ -776,9 +971,11 @@ void read_pad(PadState& p) {
         p.ry = dz(g.sThumbRY);
     }
     // SDL's HIDAPI backend reads DualSense directly; keep XInput as the first-choice path for Xbox pads.
+    g_have_xinput = have_xinput;
     if (!have_xinput) {
         SDL_UpdateGamepads();
-        static SDL_Gamepad* gamepad = nullptr;
+        std::lock_guard gamepad_lock(g_gamepad_lock);
+        SDL_Gamepad*& gamepad = g_gamepad;
         if (gamepad && !SDL_GamepadConnected(gamepad)) {
             SDL_CloseGamepad(gamepad);
             gamepad = nullptr;
@@ -827,8 +1024,14 @@ void read_pad(PadState& p) {
         }
     }
 
-    const bool menu_open = pc_menu_open();
-    if (menu_open) {
+    PadState nav{};  // the controller through its bindings, for the overlay's navigation
+    nav.lx = p.lx, nav.ly = p.ly, nav.rx = p.rx, nav.ry = p.ry;
+    for (size_t action = 0; action < kPcControlCount; ++action) {
+        const int source = g_controller_bindings[action].load(std::memory_order_relaxed);
+        if (source >= 0 && source < int(physical.size()) && physical[size_t(source)]) nav.buttons |= kPadActionBits[action];
+    }
+    const bool menu_open = pc_menu_open() || (overlay::enabled() && overlay::is_open());
+    if (pc_menu_open()) {
         for (size_t i = 0; i < physical.size(); ++i)
             if (physical[i] && !g_previous_controller_state[i]) pc_menu_capture_controller_button(int(i));
     } else {
@@ -854,6 +1057,13 @@ void read_pad(PadState& p) {
     g_previous_controller_state = physical;
     if (menu_open) p = {};
     input_script(p);  // NX_INPUT_SCRIPT (input_script.cpp): unattended runs
+    if (overlay::enabled()) {
+        PadState view = nav;
+        view.buttons |= p.buttons;
+        const bool had = view.buttons != 0;
+        overlay::filter_pad(view);  // Minus + Plus toggles; while open the menu takes the pad
+        if (overlay::is_open() || (had && view.buttons == 0)) p = {};
+    }
 }
 
 // ---- audio: XAudio2 -------------------------------------------------------------------------------------------
@@ -997,7 +1207,17 @@ std::string host_where(uint64_t pc) {
     char path[MAX_PATH] = "?";
     GetModuleFileNameA(m, path, MAX_PATH);
     const char* name = std::max(std::strrchr(path, '\\'), std::strrchr(path, '/'));
-    std::snprintf(b, sizeof b, "%s+%llx", name ? name + 1 : path, (unsigned long long)(pc - uint64_t(m)));
+    name = name ? name + 1 : path;
+    uint64_t at = pc - uint64_t(m);
+#ifdef NX_GAMELIB_FILE
+    // The game code library (nx/gamelib.h) as the linker's VA too, for tools/symbolize.py and its own map.
+    if (_stricmp(name, NX_GAMELIB_FILE) == 0) {
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(m);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(reinterpret_cast<const char*>(m) + dos->e_lfanew);
+        at += nt->OptionalHeader.ImageBase;
+    }
+#endif
+    std::snprintf(b, sizeof b, "%s+%llx", name, (unsigned long long)at);
     return b;
 }
 
@@ -1037,11 +1257,7 @@ LONG WINAPI throw_tracer(EXCEPTION_POINTERS* e) {
     void* frames[24];
     USHORT n = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
     std::string s = "C++ throw, host stack:";
-    for (USHORT k = 0; k < n; k++) {
-        char b[32];
-        std::snprintf(b, sizeof b, " %llx", (unsigned long long)exe_va(frames[k]));
-        s += b;
-    }
+    for (USHORT k = 0; k < n; k++) s += " " + host_where(uint64_t(frames[k]));  // (the game code is in its own library)
     nx::log("%s", s.c_str());
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -1068,3 +1284,67 @@ int main() {
     }
     return 0;
 }
+
+// ---- the launcher's helpers (platform.h) ----
+namespace nx::plat {
+
+static std::wstring utf16(const std::string& s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(size_t(std::max(1, n)) - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return w;
+}
+
+void pick_folder(const std::string& title, const std::string& start, std::function<void(std::string)> done) {
+    // The dialog is modal to the window but runs on a thread of its own, so the launcher keeps drawing.
+    std::thread([title, start, done] {
+        std::string out;
+        if (SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) {
+            IFileOpenDialog* d = nullptr;
+            if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d)))) {
+                DWORD opt = 0;
+                d->GetOptions(&opt);
+                d->SetOptions(opt | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+                d->SetTitle(utf16(title).c_str());
+                IShellItem* at = nullptr;
+                if (!start.empty() && SUCCEEDED(SHCreateItemFromParsingName(utf16(start).c_str(), nullptr, IID_PPV_ARGS(&at))))
+                    d->SetFolder(at), at->Release();
+                IShellItem* item = nullptr;
+                if (SUCCEEDED(d->Show(nx::g_window)) && SUCCEEDED(d->GetResult(&item))) {
+                    PWSTR path = nullptr;
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                        int n = WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
+                        out.assign(size_t(std::max(1, n)) - 1, '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, out.data(), n, nullptr, nullptr);
+                        CoTaskMemFree(path);
+                    }
+                    item->Release();
+                }
+                d->Release();
+            }
+            CoUninitialize();
+        }
+        done(out);
+    }).detach();
+}
+
+void open_folder(const std::string& path) {
+    if (path.rfind("http", 0) != 0) make_dirs(path);  // (or a web page)
+    ShellExecuteW(nullptr, L"open", utf16(path).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+std::vector<std::string> program_args() {
+    std::vector<std::string> out;
+    int n = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &n);
+    for (int i = 1; argv && i < n; i++) {
+        int len = WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, nullptr, 0, nullptr, nullptr);
+        std::string a(size_t(std::max(1, len)) - 1, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, a.data(), len, nullptr, nullptr);
+        out.push_back(a);
+    }
+    if (argv) LocalFree(argv);
+    return out;
+}
+
+}  // namespace nx::plat

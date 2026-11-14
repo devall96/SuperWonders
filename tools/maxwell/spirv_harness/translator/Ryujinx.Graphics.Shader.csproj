@@ -30,21 +30,11 @@
     <ShaderPatch Include="spirv-fmz.patch" File="Instructions/InstEmitFloatArithmetic.cs" />
   </ItemGroup>
 
-  <!-- Opt-in (-p:SpirvNan=true): float clamp/min/max as NClamp/NMin/NMax, Maxwell's NaN-dropping .SAT and FMNMX.
-       Kept out of the default build: no visible gain measured on Metal (docs/nvn/DEBUG.md #54). -->
-  <PropertyGroup>
-    <NanExclude Condition="'$(SpirvNan)' == 'true'">;$(ShaderSrc)CodeGen/Spirv/Instructions.cs</NanExclude>
-  </PropertyGroup>
-  <ItemGroup Condition="'$(SpirvNan)' == 'true'">
-    <ShaderPatch Include="spirv-nan.patch" File="CodeGen/Spirv/Instructions.cs" />
-  </ItemGroup>
-
   <ItemGroup>
     <Compile Include="$(ShaderSrc)**/*.cs"
-             Exclude="$(ShaderSrc)bin/**;$(ShaderSrc)obj/**;$(ShaderSrc)CodeGen/Spirv/SpirvGenerator.cs;$(ShaderSrc)Instructions/InstEmitFloatArithmetic.cs$(NanExclude)" />
+             Exclude="$(ShaderSrc)bin/**;$(ShaderSrc)obj/**;$(ShaderSrc)CodeGen/Spirv/SpirvGenerator.cs;$(ShaderSrc)Instructions/InstEmitFloatArithmetic.cs" />
     <Compile Include="$(PatchedDir)CodeGen/Spirv/SpirvGenerator.cs" />
     <Compile Include="$(PatchedDir)Instructions/InstEmitFloatArithmetic.cs" />
-    <Compile Include="$(PatchedDir)CodeGen/Spirv/Instructions.cs" Condition="'$(SpirvNan)' == 'true'" />
     <EmbeddedResource Include="$(ShaderSrc)CodeGen/Glsl/HelperFunctions/*.glsl"
                       LogicalName="Ryujinx.Graphics.Shader.CodeGen.Glsl.HelperFunctions.%(Filename)%(Extension)" />
   </ItemGroup>

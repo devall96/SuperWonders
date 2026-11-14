@@ -1,0 +1,9 @@
+#!/bin/sh
+# AppImage entry: SuperWonders, with what ships beside it (game-build/, VERSION, update.ini) in usr/bin
+HERE=$(dirname "$(readlink -f "$0")")
+if [ "${1:-}" = "--recomp-prepare" ]; then
+    shift
+    exec "$HERE/usr/bin/game-build/python/bin/python3" -I -B \
+        "$HERE/usr/bin/game-build/setup_game.py" setup "$@"
+fi
+exec "$HERE/usr/bin/wonder" "$@"

@@ -82,11 +82,28 @@ Shader code is Maxwell machine code inside BNSH containers (N5).
 | Generated C++ | ~630 MB, 1,198 files | ~140 MB |
 
 ```sh
-private/venv/bin/python -m recomp private/wonder/exefs/main private/wonder/gen/main --name main --base 0x4000000000
+private/venv/bin/python -m recomp private/wonder/exefs/main private/wonder/gen/main --name main --base 0x4000000000 --wonder-realtime
 private/venv/bin/python -m recomp private/wonder/exefs/sdk  private/wonder/gen/sdk  --name sdk  --base 0x4010000000
 ```
 
 The recompiler peaks at ~2.4 GB of memory on `main` (about 6 minutes on the M1).
+
+### Frame-rate-independent simulation step
+
+The game's `main+0xc9528` and `main+0xc9588` paths convert the present interval (1 or 2) into Wonder's per-frame
+simulation ratio and time step. That makes simulation speed depend on the number of rendered frames. The Wonder 1.0.0
+game-build verifies and rewrites those instruction sequences to load the step from an aligned page appended to the
+module's BSS. The runtime updates the page from a rolling average of elapsed time between presents (five samples,
+capped at 1/15 s to spread brief hitches). `NX_REALTIME_FRAME_STEP=0` restores the old interval-based step for
+comparison. The default presentation cap remains 60 FPS. The Video settings offer 30, 60, 90, 120, and 144 FPS;
+90/120/144 use a monotonic host-side deadline rather than the 60 Hz VI timer. `NX_FPS_LIMIT=90`, `120`, or `144`
+can override the saved cap and takes precedence over `NX_NO_FRAME_LIMIT`. The metrics overlay's Game speed value
+reports the applied simulation-time / elapsed-time ratio, rather than FPS divided by 60.
+
+This uses the game's existing VFR ratio and time-step fields; it does not scale the system clock or unrelated waits.
+The patch verifies the original instruction words, so another game version fails the game-code build instead of being
+patched silently. The addresses and instruction sequence were cross-checked against the Wonder frame-step analysis in
+[MacNativeGames](https://github.com/ly05010419/MacNativeGames/blob/main/games/wonder/runtime/game_patches_wonder.c).
 
 ## Host: MoltenVK on the Apple M1
 

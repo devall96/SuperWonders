@@ -1,0 +1,19 @@
+# Finding the player's position with the scanner (NX_PROBE_SCAN=<out.txt>; docs/PLAY-TOOLS.md, "Finding the player").
+# Put after the menus (tools/play/routes/menus-course11.frames) behind "@course+30": the player stands at the start.
+# Walk right, stand, walk left, stand, walk right: x goes up, stays, goes down, stays, goes up. Each "same" check
+# waits 60 frames after the walk, so the player (and the camera following it) has stopped.
+0:SNAP
+20:RIGHT:40
+120:KEEP:inc
+120:SNAP
+180:KEEP:same
+180:SNAP
+185:LEFT:30
+280:KEEP:dec
+280:SNAP
+340:KEEP:same
+340:SNAP
+345:RIGHT:30
+440:KEEP:inc
+441:DUMP
+445:MARK:end

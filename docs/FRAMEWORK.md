@@ -116,7 +116,7 @@ Useful switches:
 
 | Switch | What it does |
 |---|---|
-| `NX_MEM_LIMIT_GB=<n>` | memory guard, ends the process past this footprint (default 8) |
+| `NX_MEM_LIMIT_GB=<n>` | memory cleanup threshold (default 8 GB); desktop builds ask Vulkan to release unused reusable images when crossed, and keep running. This is not a hard allocation cap. |
 | `NX_HEADLESS=1` | no window, for unattended test runs |
 | `NX_MUTE=1` | no sound |
 | `NX_HANDHELD=1` | handheld mode, 720p |

@@ -19,6 +19,13 @@
 
 #include "nvn.h"
 #include "platform.h"
+#include "frametrace.h"
+#include "play.h"
+#include <nx/game.h>
+
+namespace nx {
+uint64_t vsync_wait(uint64_t target);  // hle_vi.cpp
+}
 
 namespace nx {
 uint64_t vsync_wait(uint64_t target);  // hle_vi.cpp
@@ -280,6 +287,26 @@ uint32_t governor_max(uint64_t now) {
 // this frame's calc and draw recording): 2 when it reaches 15.83 ms, locked after 3 slow frames, back to 1 after 15
 // fast ones (docs/nvn/DEBUG.md #43). From that call site (lr main+e16ac, x19 = the framework): a histogram of that
 // time every 600 frames, and NX_MAX_INTERVAL=1 clamps the game's own maximum to 1 (fields 0x24c/0x264/0x268).
+std::atomic<int> g_frame_cap{60};  // set_frame_cap: 60, or 30
+int frame_cap() {
+    static const int forced = [] {
+        const char* e = std::getenv("NX_FPS_CAP");
+        if (!e) return 0;
+        const int cap = std::atoi(e);
+        return cap == 30 || cap == 60 || cap == 90 || cap == 120 || cap == 144 ? cap : 60;
+    }();
+    // NX_FPS_CAP_UNTIL=<frame> (tests): 30 until that frame, then the setting, as a player switching back in the menu.
+    static const uint64_t until = [] {
+        const char* e = std::getenv("NX_FPS_CAP_UNTIL");
+        return e ? uint64_t(std::strtoull(e, nullptr, 10)) : uint64_t(0);
+    }();
+    if (until && g_frame.load(std::memory_order_relaxed) < until) return 30;
+    return forced ? forced : g_frame_cap.load(std::memory_order_relaxed);
+}
+
+// The 30 fps cap: the game's own interval set to 2 (fw[0x264], fw[0x268] and the value it presents with), the mode
+// its governor picks under load. The game then steps its logic two vsyncs per frame and keeps full speed; waiting
+// longer between presents alone would halve its speed (its step follows the interval it chose, not wall time).
 void frame_time_probe(CPU& c) {
     const LoadedModule* m = module_at(c.x[30]);
     if (!m || c.x[30] - m->base != 0xe16ac || !c.x[19]) return;
@@ -296,6 +323,21 @@ void frame_time_probe(CPU& c) {
         if (ld<uint32_t>(c.x[19] + 0x264) > max) st<uint32_t>(c.x[19] + 0x264, max);
         if (int(c.x[1]) > int(max)) c.x[1] = max;
     }
+    static int applied_cap = 60;
+    const int cap = frame_cap();
+    if (cap == 30) {
+        if (ld<uint32_t>(c.x[19] + 0x24c) < 2) st<uint32_t>(c.x[19] + 0x24c, 2);
+        st<uint32_t>(c.x[19] + 0x264, 2);
+        st<uint32_t>(c.x[19] + 0x268, 2);
+        if (int(c.x[1]) < 2) c.x[1] = 2;
+    } else if (applied_cap == 30) {  // back to 60: release the game's interval (else it stays locked at 2)
+        st<uint32_t>(c.x[19] + 0x264, 1);
+        st<uint32_t>(c.x[19] + 0x268, 1);
+        if (game_max) st<uint32_t>(c.x[19] + 0x24c, game_max);
+        c.x[1] = 1;
+        log("nvn: frame cap back to 60: the game's interval released");
+    }
+    applied_cap = cap;
     static uint64_t bins[5] = {}, frames = 0;
     double ms = double(ld<uint64_t>(c.x[19] + 0x118)) / 19200.0;
     // A main-thread frame over 33 ms: what it waited on (PHASE3.md I1), its CPU time, faults and switches since the
@@ -345,10 +387,28 @@ void WindowSetPresentInterval(CPU& c) {
 // On the Switch the texture-available sync of the next acquire does this; ours is signaled at once, so without it
 // the game runs as fast as it can once it is faster than 60 fps. The vsyncs are the vi ticks (hle_vi.cpp: the
 // display's blank where it can be), so frames reach the display on its refresh, not on a clock drifting against it.
-// A late frame does not wait for the next vsync. NX_NO_FRAME_LIMIT=1, or fast-forward held: unpaced (the game's
-// logic steps once per frame, so it runs as fast as the machine renders).
+// A late frame does not wait for the next vsync. NX_NO_FRAME_LIMIT=1, or fast-forward held: unpaced when the selected
+// cap is 30/60. The explicit 90/120/144 caps use a monotonic host deadline instead of the 60 Hz VI timer.
 void pace_present(int interval) {
     static const bool off = std::getenv("NX_NO_FRAME_LIMIT") != nullptr;
+    static const int env_fps = [] {
+        const char* value = std::getenv("NX_FPS_LIMIT");
+        if (!value || !*value) return 0;
+        const int fps = std::atoi(value);
+        return fps == 90 || fps == 120 || fps == 144 ? fps : 0;
+    }();
+    static uint64_t custom_next = 0;
+    const int custom_fps = env_fps ? env_fps : frame_cap();
+    if (custom_fps > 60 && !plat::fast_forward()) {
+        // An explicit cap takes precedence over the raw unpaced diagnostic switch. Reset the deadline after a
+        // significant hitch instead of trying to "catch up" with a burst of simulation frames.
+        const uint64_t period = 1'000'000'000ull / uint64_t(custom_fps);
+        const uint64_t now = plat::monotonic_ns();
+        if (!custom_next || now > custom_next + period * 2) custom_next = now + period;
+        else custom_next += period;
+        if (custom_next > now) plat::sleep_ns(int64_t(custom_next - now));
+        return;
+    }
     static uint64_t next = 0;
     if (off || interval <= 0 || plat::fast_forward()) return;
     uint64_t now = vsync_wait(next);
@@ -382,19 +442,28 @@ void QueuePresentTexture(CPU& c) {
         // At most two presents queued: the game runs at most two frames ahead of the replay.
         static uint64_t queued[2] = {};
         static int next_slot = 0;
+        const uint64_t t_wait = plat::monotonic_ns();
         worker_wait(queued[next_slot]);
+        const uint64_t replay_wait_ns = plat::monotonic_ns() - t_wait;
         if (int(c.x[2]) >= 0 && size_t(c.x[2]) < w->textures.size()) {
             uint64_t texture = w->textures[size_t(c.x[2])];
             std::array<int32_t, 4> crop{w->crop[0], w->crop[1], w->crop[2], w->crop[3]};
             queued[next_slot] = worker_run([texture, crop] { gpu_present(texture, crop.data()); });
             next_slot ^= 1;
         }
+        const uint64_t t_pace = plat::monotonic_ns();
         pace_present(w->interval);
+        ft::guest_present(replay_wait_ns, plat::monotonic_ns() - t_pace, w->interval);  // frametrace.h
     }
     work_from = plat::monotonic_ns();
     uint64_t n = ++g_presents;
     if (n == 1 || (n & (n - 1)) == 0) log("nvn: present #%llu (texture %d)", (unsigned long long)n, int(c.x[2]));
+    game::frame_presented(plat::monotonic_ns(), [&] {
+        if (auto* w = get<Window>(c.x[1])) return w->interval;
+        return 1;
+    }());
     g_frame++;
+    play::frame();  // probe, anchors, scanner steps (play.cpp)
 }
 
 // (NVNwindow*, int x, int y, int width, int height): the part of the window textures shown. In handheld mode
@@ -432,5 +501,10 @@ NX_HLE("nvnWindowGetNumActiveTextures", WindowGetNumActiveTextures);
 NX_HLE("nvnWindowSetNumActiveTextures", WindowSetNumActiveTextures);
 NX_HLE("nvnWindowGetPresentInterval", WindowGetPresentInterval);
 NX_HLE("nvnWindowSetPresentInterval", WindowSetPresentInterval);
+
+void set_frame_cap(int fps) {
+    const int cap = fps == 30 || fps == 60 || fps == 90 || fps == 120 || fps == 144 ? fps : 60;
+    g_frame_cap.store(cap, std::memory_order_relaxed);
+}
 
 }  // namespace nx::nvn

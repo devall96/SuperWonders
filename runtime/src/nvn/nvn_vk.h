@@ -31,6 +31,8 @@ struct GpuImage {
     bool storage = false;          // created with VK_IMAGE_USAGE_STORAGE_BIT (compute shaders write it)
     bool mutable_format = true;
     uint64_t rendered_at = 0;      // the pass-end serial of the last pass that rendered into it (nvn_draw.cpp, G4)
+    uint64_t rendered_frame = 0;   // g_frame + 1 at that pass's end (0: never rendered): may a draw into it skip a frame
+
     // An R8 texture always read as (1, 1, 1, R) (a glyph cache): stored as RGBA8 (255, 255, 255, R) and sampled
     // without swizzle. MoltenVK returned alpha 0 for that view swizzle on a 2D-array view, so all text was invisible.
     bool alpha_from_r = false;
@@ -48,7 +50,37 @@ void gpu_image_memory_freed(uint64_t bytes);
 uint64_t trim_reusable_image_cache();
 
 VkDevice vk_device();
+VkInstance vk_instance();     // for the overlay (overlay/overlay_vk.cpp)
+uint32_t vk_queue_family();
+void* vk_gipa();              // the loader's vkGetInstanceProcAddr
+VkQueue vk_queue();
+// nvn_fsr.cpp: FSR 1 upscaling of the presented image (NX_FSR, the overlay menu's Upscaling setting).
+void set_fsr(bool on, float sharpness_stops);
+bool fsr_active();
+// Upscales `src` into swapchain image `dst` (left in TRANSFER_DST_OPTIMAL) when FSR is on and `src` is smaller than
+// `extent`; false otherwise (the caller blits).
+bool fsr_record(VkCommandBuffer cb, GpuImage& src, GpuImage& dst, VkExtent2D extent, const int32_t* crop);
+GpuImage* fsr_output();  // the last upscaled image, for frame dumps with NX_DUMP_FSR=1 (else null)
+void fsr_release();      // the swapchain goes away
+// nvn_fxaa.cpp: FXAA on the presented image (NX_FXAA, the overlay menu's Anti-aliasing setting).
+void set_fxaa(bool on);
+GpuImage* fxaa_record(VkCommandBuffer cb, GpuImage& src);  // the anti-aliased image, or null (off, or not RGBA8)
+void fxaa_release();
+// nvn_sampler.cpp: the player's anisotropic filtering (0 the game's, 2..16); read at the first sampler (a restart).
+void set_anisotropy(int level);
+// The player's VSync (0 On: FIFO, 1 Fast: MAILBOX else IMMEDIATE, 2 Adaptive: FIFO_RELAXED, 3 Off: IMMEDIATE);
+// a change re-makes the swapchain at the next present. NX_VSYNC=on|fast|adaptive|off overrides it.
+void set_vsync(int mode);
+// The player's frame rate cap, 60 or 30 (nvn_queue.cpp, pace_present). NX_FPS_CAP=30|60 overrides it.
+void set_frame_cap(int fps);
 bool vk_depth_clip_control();
+// VK_EXT_graphics_pipeline_library is enabled and used (nvn_pipeline.cpp; NX_GPL, nvn_vk.cpp).
+bool vk_gpl();
+// VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT works (Vulkan 1.3 pipelineCreationCacheControl).
+bool vk_pipeline_cache_control();
+// The serial the submit being recorded will get (nvn_frames.cpp): a handle it uses may go once
+// frame_completed() reaches it.
+uint64_t frame_recording_serial();
 // The core features the device was created with (all the GPU has): depthClamp, depthBiasClamp, depthBounds, ...
 const VkPhysicalDeviceFeatures& vk_features();
 VkPhysicalDevice vk_physical();
@@ -178,6 +210,12 @@ uint32_t frame_dump_every();
 bool frame_dump_due(uint64_t presents);  // NX_DUMP_FRAMES, or a dump_frames file in the data folder
 bool frame_dump_record(VkCommandBuffer cb, GpuImage& img);
 void frame_dump_write(const GpuImage& img, uint64_t frame);
+// Startup shader preparation progress (nvn_vk.cpp): to the platform and the overlay's compile screen, which is
+// presented from here (at most every 33 ms) while the game has not drawn yet. kind 0: shaders, 1: recorded pipelines.
+void prep_progress(uint64_t done, uint64_t total, bool visible, int kind);
+// Before the game runs (the launcher): Vulkan started if it isn't yet, then one frame of the overlay alone presented
+// (a cleared image with the overlay's screen on top). False: no device or no overlay.
+bool present_ui_frame();
 bool debug_snapshots_pending();  // NX_SNAP_*: this submit recorded snapshots (it is then waited for)
 
 // nvn_draw.cpp: replays one draw-related command; ends the render pass it may have open when asked.

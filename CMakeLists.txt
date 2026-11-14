@@ -32,6 +32,10 @@ if(MSVC)
     add_compile_options(/arch:AVX2)
 elseif(MINGW)
     add_compile_options(-mavx2)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    # x86-64-v3 (Haswell and later): AVX2, as on Windows, and CMPXCHG16B, without which the recompiled code's
+    # 128-bit __atomic_compare_exchange_n becomes a libatomic call (__atomic_compare_exchange_16, unresolved).
+    add_compile_options(-march=x86-64-v3)
 endif()
 if(WIN32)
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -48,12 +52,23 @@ endif()
 # compiled when the game runs. glslc comes with the Vulkan SDK (the NDK's shader-tools on Android, shaderc on macOS).
 set(NX_SHADER_OUT "${CMAKE_BINARY_DIR}/shaders")
 file(GLOB NX_NDK_SHADER_TOOLS "${ANDROID_NDK}/shader-tools/*")
-find_program(NX_GLSLC glslc HINTS "${NX_VULKAN_SDK}/Bin" "${NX_VULKAN_SDK}/bin" ${NX_NDK_SHADER_TOOLS} REQUIRED)
+# glslc, else glslangValidator (Ubuntu 22.04, the AppImage's build container, has no glslc): both write the SPIR-V as a
+# list of words to #include (glslc's is optimized, glslangValidator's isn't; either is valid).
+# (each in a cache variable of its own: a reconfigure must not hand glslc's arguments to glslangValidator)
+find_program(NX_GLSLC glslc HINTS "${NX_VULKAN_SDK}/Bin" "${NX_VULKAN_SDK}/bin" ${NX_NDK_SHADER_TOOLS})
+if(NX_GLSLC)
+    set(NX_GLSL_TOOL "${NX_GLSLC}")
+    set(NX_GLSL_ARGS -O --target-env=vulkan1.0 -mfmt=num -o)
+else()
+    find_program(NX_GLSLANG glslangValidator HINTS "${NX_VULKAN_SDK}/Bin" "${NX_VULKAN_SDK}/bin" REQUIRED)
+    set(NX_GLSL_TOOL "${NX_GLSLANG}")
+    set(NX_GLSL_ARGS -V --target-env vulkan1.0 -x -o)
+endif()
 foreach(shader astc_decode.comp)
     set(out "${NX_SHADER_OUT}/${shader}.inc")
     add_custom_command(OUTPUT "${out}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${NX_SHADER_OUT}"
-        COMMAND "${NX_GLSLC}" -O --target-env=vulkan1.0 -mfmt=num -o "${out}" "${CMAKE_SOURCE_DIR}/runtime/shaders/${shader}"
+        COMMAND "${NX_GLSL_TOOL}" ${NX_GLSL_ARGS} "${out}" "${CMAKE_SOURCE_DIR}/runtime/shaders/${shader}"
         DEPENDS "${CMAKE_SOURCE_DIR}/runtime/shaders/${shader}"
         COMMENT "glslc ${shader}")
     list(APPEND NX_SHADER_SOURCES "${out}")
@@ -79,6 +94,12 @@ if(NX_TESTS AND NOT ANDROID)
         target_include_directories(astc_gpu_test PRIVATE runtime/src/nvn "${NX_SHADER_OUT}" "${NX_VULKAN_SDK}/Include")
         target_link_libraries(astc_gpu_test PRIVATE "${NX_VULKAN_SDK}/Lib/vulkan-1.lib")
         add_test(NAME astc_gpu COMMAND astc_gpu_test)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")  # the same, with the system's Vulkan loader and headers
+        add_executable(astc_gpu_test tests/astc_gpu_test.cpp runtime/src/nvn/nvn_astc.cpp
+                       "${NX_SHADER_OUT}/astc_decode.comp.inc")
+        target_include_directories(astc_gpu_test PRIVATE runtime/src/nvn "${NX_SHADER_OUT}")
+        target_link_libraries(astc_gpu_test PRIVATE vulkan)
+        add_test(NAME astc_gpu COMMAND astc_gpu_test)
     endif()
     add_executable(shader_cache_test tests/shader_cache_test.cpp runtime/src/nvn/nvn_shaders.cpp
                    runtime/src/nvn/nvn_spirv_reflect.cpp)
@@ -94,26 +115,84 @@ if(NX_TESTS AND NOT ANDROID)
     endif()
 endif()
 
-# Without the generated code (a checkout with no game data) only the tests above are built.
-file(GLOB NX_GEN_PROBE "${NX_GEN_DIR}/main/*.cpp")
-if(NOT NX_GEN_PROBE)
-    message(WARNING "No generated code in ${NX_GEN_DIR}/main: building the unit tests only")
-    return()
+# The game code library (nx/gamelib.h): the program holds the runtime only and loads the recompiled modules from
+# <game>_game.dll / lib<game>_game.so, built from the player's own files. So the program builds, and can ship, without
+# any generated code. OFF: one program with the game code linked in, as before (Android and macOS stay that way).
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(NX_GAME_LIBRARY_DEFAULT ON)
+else()
+    set(NX_GAME_LIBRARY_DEFAULT OFF)
+endif()
+option(NX_GAME_LIBRARY "Load the game code from a library of its own" ${NX_GAME_LIBRARY_DEFAULT})
+if(NX_GAME_LIBRARY AND (ANDROID OR APPLE))
+    message(FATAL_ERROR "NX_GAME_LIBRARY is for Windows and Linux")
+endif()
+if(WIN32)
+    set(NX_GAMELIB_FILE "${NX_GAME}_game.dll")
+else()
+    set(NX_GAMELIB_FILE "lib${NX_GAME}_game.so")
 endif()
 
+if(NX_TESTS)
+    # SuperWonders Update's plain logic (launcher/update_core.c, update_crypto.c): versions, releases, file lists,
+    # paths, launcher installs
+    add_executable(update_core_test tests/update_core_test.c runtime/src/launcher/update_core.c
+                   runtime/src/launcher/update_crypto.c)
+    add_test(NAME update_core COMMAND update_core_test)
+endif()
+
+# Without the generated code (a checkout with no game data) only the tests above are built, and the program when it
+# loads the game code from a library.
+file(GLOB NX_GEN_PROBE "${NX_GEN_DIR}/main/*.cpp")
+if(NOT NX_GEN_PROBE AND NOT NX_GAME_LIBRARY)
+    message(WARNING "No generated code in ${NX_GEN_DIR}/main: building the unit tests only")
+    return()
+elseif(NOT NX_GEN_PROBE)
+    message(STATUS "No generated code in ${NX_GEN_DIR}/main: building the program only, not ${NX_GAMELIB_FILE}")
+endif()
+
+if(NX_GEN_PROBE)
 foreach(mod main sdk)
     file(GLOB src CONFIGURE_DEPENDS "${NX_GEN_DIR}/${mod}/*.cpp")
     add_library(game_${mod} STATIC ${src})
     target_include_directories(game_${mod} PRIVATE runtime/include "${NX_GEN_DIR}/${mod}")
+    if(NX_GAME_LIBRARY AND NOT WIN32)
+        # Linked into a shared library. Hidden visibility keeps the calls between recompiled functions direct.
+        set_target_properties(game_${mod} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    endif()
     if(ANDROID)
         # Hidden visibility: calls between recompiled functions are direct, not through the PLT.
         # armv8.2-a+crypto: cpu.h's AES/SHA paths need __ARM_FEATURE_AES/SHA2 (the NDK default armv8-a has neither).
         target_compile_options(game_${mod} PRIVATE -O2 -fPIC -fvisibility=hidden -fno-semantic-interposition
                                -march=armv8.2-a+crypto)
-    elseif(APPLE)
+    elseif(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_compile_options(game_${mod} PRIVATE -O2 -fvisibility=hidden)
+        if(NX_GAME_LIBRARY)
+            target_compile_options(game_${mod} PRIVATE -fno-semantic-interposition)
+        endif()
     endif()
 endforeach()
+
+if(NX_GAME_LIBRARY)
+    # wonder_game.dll / libwonder_game.so: the two modules and the jumps to the runtime (runtime/src/gamelib_entry.cpp).
+    # Nothing else of the runtime is in it, and it exports only nx_gamelib_bind.
+    add_library(${NX_GAME}_game SHARED runtime/src/gamelib_entry.cpp)
+    target_include_directories(${NX_GAME}_game PRIVATE runtime/include)
+    target_compile_definitions(${NX_GAME}_game PRIVATE NX_GAME_NAME="${NX_GAME}")
+    target_link_libraries(${NX_GAME}_game PRIVATE game_main game_sdk)
+    if(WIN32)
+        set_target_properties(${NX_GAME}_game PROPERTIES PREFIX "" IMPORT_PREFIX "")
+    endif()
+    if(MINGW)
+        # The C++ runtime as DLLs (libc++.dll, libunwind.dll, next to the program), shared with it: the runtime throws
+        # LongJmp, the recompiled code catches it. A map for tools/symbolize.py, like the program's.
+        target_link_options(${NX_GAME}_game PRIVATE "-Wl,-Map,$<TARGET_FILE_DIR:${NX_GAME}_game>/${NX_GAME}_game.map")
+    elseif(NOT WIN32)
+        target_compile_options(${NX_GAME}_game PRIVATE -fvisibility=hidden)
+        target_link_options(${NX_GAME}_game PRIVATE -Wl,-Bsymbolic -Wl,--no-undefined)
+    endif()
+endif()
+endif()  # NX_GEN_PROBE
 
 set(NX_RUNTIME_SOURCES
     runtime/src/main.cpp
@@ -123,6 +202,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/kernel_watch.cpp
     runtime/src/ipc.cpp
     runtime/src/svc_am.cpp
+    runtime/src/svc_nfp.cpp
     runtime/src/svc_misc.cpp
     runtime/src/svc_time.cpp
     runtime/src/svc_process.cpp
@@ -135,9 +215,11 @@ set(NX_RUNTIME_SOURCES
     runtime/src/hle_audio.cpp
     runtime/src/hle_pl.cpp
     runtime/src/input_script.cpp
+    runtime/src/play.cpp
     runtime/src/touch_layout.cpp
     runtime/src/perf_hint.cpp
     runtime/src/frame_stats.cpp
+    runtime/src/frametrace.cpp
     runtime/src/write_watch.cpp
     runtime/src/nvn/nvn_caps.cpp
     runtime/src/nvn/nvn_renderpass.cpp
@@ -175,12 +257,17 @@ set(NX_RUNTIME_SOURCES
     runtime/src/nvn/nvn_copy.cpp
     runtime/src/nvn/nvn_pipeline.cpp
     runtime/src/nvn/nvn_dummy.cpp
+    runtime/src/nvn/nvn_fsr.cpp
+    runtime/src/nvn/nvn_fxaa.cpp
+    runtime/src/nvn/nvn_compare_twin.cpp
     runtime/src/nvn/nvn_pipeline_cache.cpp
     runtime/src/nvn/nvn_upload.cpp
     runtime/src/nvn/nvn_astc.cpp
     runtime/src/nvn/nvn_spirv_patch.cpp
     runtime/src/nvn/nvn_spirv_int_textures.cpp
     runtime/src/nvn/nvn_spirv_locals.cpp
+    runtime/src/nvn/nvn_spirv_unused.cpp
+    runtime/src/nvn/nvn_pipeline_async.cpp
     runtime/src/nvn/nvn_spirv_clip.cpp
     runtime/src/nvn/nvn_present.cpp
     runtime/src/nvn/nvn_pipeline_cache.cpp
@@ -194,9 +281,47 @@ set(NX_RUNTIME_SOURCES
     runtime/src/vk_swapchain.cpp
     runtime/src/vk_gen.cpp
     runtime/src/vk_present.cpp
+    runtime/src/overlay/settings.cpp
+    runtime/src/overlay/overlay.cpp
+    runtime/src/overlay/overlay_menu.cpp
+    runtime/src/overlay/overlay_progress.cpp
+    runtime/src/overlay/overlay_ui.cpp
+    runtime/src/overlay/option_rows.cpp
+    runtime/src/overlay/overlay_vk.cpp
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/backends/imgui_impl_vulkan.cpp
 )
+# Dear ImGui (third_party/imgui, MIT): the overlay menu. Its Vulkan backend loads functions through the runtime's
+# loader (ImGui_ImplVulkan_LoadFunctions), like the rest of the runtime.
+set_source_files_properties(third_party/imgui/backends/imgui_impl_vulkan.cpp PROPERTIES
+    COMPILE_DEFINITIONS "VK_NO_PROTOTYPES;IMGUI_IMPL_VULKAN_NO_PROTOTYPES")
+# AMD FidelityFX FSR 1 (third_party/fsr1, MIT): its CPU-side constant setup (FsrEasuCon, FsrRcasCon).
+set_source_files_properties(runtime/src/nvn/nvn_fsr.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/third_party/fsr1")
+set_source_files_properties(runtime/src/overlay/overlay_vk.cpp PROPERTIES
+    COMPILE_DEFINITIONS "IMGUI_IMPL_VULKAN_NO_PROTOTYPES")
 file(GLOB NX_GAME_SOURCES CONFIGURE_DEPENDS "${NX_GAME_DIR}/*.cpp")
-list(APPEND NX_RUNTIME_SOURCES ${NX_GAME_SOURCES} ${NX_SHADER_SOURCES})
+list(APPEND NX_RUNTIME_SOURCES ${NX_GAME_SOURCES} ${NX_SHADER_SOURCES} runtime/src/gamelib.cpp)
+if(NX_GAME_LIBRARY)
+    # SuperWonders Launcher: the start screen before the game (setup, settings, mods, updates; launcher/launcher.h)
+    list(APPEND NX_RUNTIME_SOURCES runtime/src/launcher/launcher.cpp runtime/src/launcher/updates.cpp runtime/src/launcher/test_pad.cpp
+         runtime/src/launcher/update_core.c runtime/src/launcher/update_crypto.c)
+    if(NOT WIN32)
+        list(APPEND NX_RUNTIME_SOURCES runtime/src/launcher/update_appimage.c)  # (an AppImage updates itself)
+    endif()
+endif()
+# The release's version (VERSION): the launcher shows it, the updater compares it with the newest release's.
+file(STRINGS "${CMAKE_SOURCE_DIR}/VERSION" NX_VERSION LIMIT_COUNT 1)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/VERSION")
+# The recompiled modules: linked into the program, or loaded from the game code library (above).
+if(NX_GAME_LIBRARY)
+    set(NX_GAME_MODULES "")
+else()
+    set(NX_GAME_MODULES game_main game_sdk)
+endif()
 
 if(ANDROID)
     # NativeActivity app: lib<game>.so, entry android_main (android_native_app_glue).
@@ -204,11 +329,11 @@ if(ANDROID)
     add_library(${NX_GAME} SHARED ${NX_RUNTIME_SOURCES} runtime/src/platform_android.cpp
         runtime/src/platform_android_input.cpp runtime/src/platform_android_audio.cpp runtime/src/memguard_android.cpp
         "${GLUE}/android_native_app_glue.c")
-    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include" "${GLUE}")
+    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src third_party/imgui "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include" "${GLUE}")
     # Our ANativeActivity_onCreate (platform_android.cpp) runs first, on the UI thread, then calls the glue's.
     set_source_files_properties("${GLUE}/android_native_app_glue.c" PROPERTIES
         COMPILE_DEFINITIONS "ANativeActivity_onCreate=glue_ANativeActivity_onCreate")
-    target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk android log aaudio)
+    target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_MODULES} android log aaudio)
     target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden -fno-semantic-interposition -march=armv8.2-a+crypto)
     # The glue's ANativeActivity_onCreate must be exported. 16 KB page alignment: Android 15+ devices with 16 KB pages.
     target_link_options(${NX_GAME} PRIVATE -u ANativeActivity_onCreate -Wl,-z,max-page-size=16384)
@@ -218,11 +343,60 @@ elseif(APPLE)
     find_package(SDL3 REQUIRED CONFIG)
     find_path(NX_VULKAN_INCLUDE vulkan/vulkan.h HINTS /opt/homebrew/include /usr/local/include)
     add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_mac.cpp runtime/src/memguard_mac.cpp)
-    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
-    target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk SDL3::SDL3)
+    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src third_party/imgui "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
+    target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_MODULES} SDL3::SDL3)
     target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden)
     # The executable loads near 0x1_0000_0000, below the guest ranges (0x40_0000_0000 and up). The game runs on its
     # own thread with a 64 MiB stack (platform_mac.cpp), so the main thread's stack size does not matter.
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Linux: SDL3 (window, input, audio, the Vulkan surface) and the Vulkan headers from the distribution
+    # (Ubuntu/Debian: apt install libsdl3-dev libvulkan-dev). The loader comes with the GPU driver (libvulkan1).
+    # The F1 settings menu (pc_menu_win.cpp) is Win32 drawing code and is not built here.
+    find_package(Threads REQUIRED)
+    # NX_SDL_BUNDLED: SDL3 built from its release here and linked in (the AppImage, built on Ubuntu 22.04, which has no
+    # SDL3; tools/linux/package.sh). Off: the distribution's (apt install libsdl3-dev).
+    option(NX_SDL_BUNDLED "Build SDL3 from source and link it statically" OFF)
+    if(NX_SDL_BUNDLED)
+        include(FetchContent)
+        set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+        set(SDL_STATIC ON CACHE BOOL "" FORCE)
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+        set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(SDL3
+            URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
+            URL_HASH SHA256=9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+        FetchContent_MakeAvailable(SDL3)
+        if(NOT TARGET SDL3::SDL3)  # (SDL 3.4 as a subproject defines it itself)
+            add_library(SDL3::SDL3 ALIAS SDL3-static)
+        endif()
+    else()
+        find_package(SDL3 REQUIRED CONFIG)
+    endif()
+    # vk_gen.{h,cpp} need the registry version tools/gen_vk.py generated from (1.4.357); distributions ship older
+    # headers (Ubuntu 26.04: 1.4.341). Use the LunarG SDK when VULKAN_SDK is set, else Khronos' headers at that tag.
+    if(DEFINED ENV{VULKAN_SDK})
+        set(NX_VULKAN_INCLUDE "$ENV{VULKAN_SDK}/include")
+    else()
+        include(FetchContent)
+        FetchContent_Declare(VulkanHeaders
+            GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
+            GIT_TAG v1.4.357
+            GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(VulkanHeaders)
+        set(NX_VULKAN_INCLUDE "${vulkanheaders_SOURCE_DIR}/include")
+    endif()
+    add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_linux.cpp runtime/src/platform_linux_input.cpp
+                   runtime/src/memguard_linux.cpp)
+    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src third_party/imgui "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
+    target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_MODULES} SDL3::SDL3 Threads::Threads ${CMAKE_DL_LIBS})
+    target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden)
+    # The executable is position dependent and loads at 0x40_0000, far below the guest ranges (0x40_0000_0000 and
+    # up); shared libraries and the host heap are mapped top-down from near 0x7fff_ffff_ffff. The game runs on its
+    # own thread with a 64 MiB stack (platform_linux.cpp).
+    target_link_options(${NX_GAME} PRIVATE -no-pie)
 else()
     if(WIN32)
         # SDL's HIDAPI gamepad backend provides native DualSense support without a driver wrapper.
@@ -246,16 +420,25 @@ else()
     endif()
     add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_win.cpp runtime/src/pc_menu_win.cpp
                    runtime/src/memguard_win.cpp)
-    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include")
+    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src third_party/imgui "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include")
     if(MINGW)
         # LLVM-MinGW ships the XAudio2 2.9 import library under its SDK name. Its plain "xinput" is XInput 1.3 (the
         # DirectX 2010 redistributable, missing on a clean Windows); 1.4 ships with Windows 8 and later.
-        target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk xinput1_4 xaudio2_9 ole32 psapi)
-        # libc++ and libunwind linked in: without it wonder.exe needs libc++.dll and libunwind.dll next to it, which
-        # nothing copies there (the portable pack copies the MSVC runtime). The UCRT stays a system DLL.
-        target_link_options(${NX_GAME} PRIVATE -static)
+        target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_MODULES} xinput1_4 xaudio2_9 ole32 psapi shell32 uuid winhttp)
+        if(NX_GAME_LIBRARY)
+            # The C++ runtime shared with the game code library (one copy: LongJmp is thrown here and caught there),
+            # so libc++.dll and libunwind.dll go next to the program. The UCRT stays a system DLL.
+            get_filename_component(NX_MINGW_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+            add_custom_command(TARGET ${NX_GAME} POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${NX_MINGW_BIN}/libc++.dll" "${NX_MINGW_BIN}/libunwind.dll"
+                        "$<TARGET_FILE_DIR:${NX_GAME}>")
+        else()
+            # libc++ and libunwind linked in: without it wonder.exe needs libc++.dll and libunwind.dll next to it, which
+            # nothing copies there (the portable pack copies the MSVC runtime). The UCRT stays a system DLL.
+            target_link_options(${NX_GAME} PRIVATE -static)
+        endif()
     else()
-        target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk xinput xaudio2 ole32 psapi)
+        target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_MODULES} xinput xaudio2 ole32 psapi)
     endif()
     if(WIN32)
         target_link_libraries(${NX_GAME} PRIVATE SDL3::SDL3-static)
@@ -279,3 +462,11 @@ else()
 endif()
 
 target_include_directories(${NX_GAME} PRIVATE "${NX_SHADER_OUT}")
+target_compile_definitions(${NX_GAME} PRIVATE NX_GAME_NAME="${NX_GAME}" NX_GAMELIB_FILE="${NX_GAMELIB_FILE}"
+                           NX_GAME_LIBRARY=$<BOOL:${NX_GAME_LIBRARY}> NX_VERSION_STRING="${NX_VERSION}")
+# SuperWonders Update (launcher/updates.cpp): with a release key's public half (tools/sign_update.py --public), only
+# signed releases are installed; without one, GitHub's SHA-256 of the archive is still required.
+set(SUPERWONDERS_UPDATE_PUBKEY "" CACHE STRING "Release signing key, public half (128 hex digits); empty: not required")
+if(SUPERWONDERS_UPDATE_PUBKEY)
+    target_compile_definitions(${NX_GAME} PRIVATE SUPERWONDERS_UPDATE_PUBKEY="${SUPERWONDERS_UPDATE_PUBKEY}")
+endif()

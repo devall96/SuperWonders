@@ -1,0 +1,313 @@
+// make test-update-core: the plain logic of SW Update (runtime/update_core.c), with made-up releases and file lists.
+// The updater's plain logic (runtime/src/launcher/update_core.c), from Savage Wind's tools/test_update_core.c
+// (github.com/Revivedx/SavageWindRecomp, MIT), with SuperWonders' names, the optional signature, the
+// pre-release rule and Retro Launcher. ctest: update_core.
+#include "../runtime/src/launcher/update_core.h"
+#include "../runtime/src/launcher/update_crypto.h"
+#include <stdio.h>
+#include <string.h>
+
+static int fails;
+#define CHECK(x) do { if (!(x)) { printf("FAILED line %d: %s\n", __LINE__, #x); fails++; } } while (0)
+
+#define H64 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+#define ASSET(n, u, s) "{\"name\":\"" n "\",\"browser_download_url\":\"" u "\",\"size\":" #s ",\"digest\":\"sha256:" H64 "\"}"
+#define RELEASE(tag, draft, assets) \
+    "{\"tag_name\":\"" tag "\",\"draft\":" draft ",\"prerelease\":true,\"body\":\"notes \\\"quoted\\\" \\u00e9\"," \
+    "\"html_url\":\"https://example.test/" tag "\",\"author\":{\"login\":\"x\",\"n\":[1,2,{\"a\":null}]},\"assets\":[" assets "]}"
+#define ZIP(v) ASSET("SavageWind-" v "-windows.zip", "https://example.test/" v ".zip", 1000)
+#define SIG(v) ASSET("SavageWind-" v "-windows.zip.sig", "https://example.test/" v ".sig", 128)
+
+static void versions(void) {
+    CHECK(uc_version_valid("0.5.1-alpha.5"));
+    CHECK(uc_version_valid("v0.5.1"));
+    CHECK(uc_version_valid("1.0.0-rc.2"));
+    CHECK(!uc_version_valid(""));
+    CHECK(!uc_version_valid("0.5"));
+    CHECK(!uc_version_valid("0.5.1-"));
+    CHECK(!uc_version_valid("0.5.1-alpha"));
+    CHECK(!uc_version_valid("0.5.1-gamma.1"));
+    CHECK(!uc_version_valid("0.5.1 alpha.5"));
+    CHECK(!uc_version_valid("latest"));
+    CHECK(uc_version_cmp("0.5.1-alpha.5", "0.5.0-alpha.5") > 0);
+    CHECK(uc_version_cmp("v0.5.0-alpha.5", "0.5.0-alpha.5") == 0);
+    CHECK(uc_version_cmp("0.4.1-alpha.4", "0.5.0-alpha.5") < 0);
+    CHECK(uc_version_cmp("0.10.0-alpha.1", "0.9.0-alpha.9") > 0);
+    CHECK(uc_version_cmp("0.5.0-alpha.10", "0.5.0-alpha.9") > 0);
+    CHECK(uc_version_cmp("1.0.0", "1.0.0-rc.9") > 0);
+    CHECK(uc_version_cmp("1.0.0-beta.1", "1.0.0-alpha.9") > 0);
+    CHECK(uc_version_cmp("1.0.0-rc.1", "1.0.0-beta.9") > 0);
+    CHECK(uc_version_cmp("junk", "0.0.1") < 0);
+}
+
+static void pick(void) {
+    UcRelease r;
+    int unsig = -1;
+    static const char newest_first[] =
+        "[" RELEASE("v0.5.2-alpha.5", "false", ZIP("0.5.2-alpha.5") "," SIG("0.5.2-alpha.5")) ","
+            RELEASE("v0.5.1-alpha.5", "false", ZIP("0.5.1-alpha.5") "," SIG("0.5.1-alpha.5")) ","
+            RELEASE("v0.5.0-alpha.5", "false", ZIP("0.5.0-alpha.5")) "]";
+    CHECK(uc_pick_release(newest_first, "0.5.0-alpha.5", "-windows.zip", true, &r, &unsig) == UC_PICK_UPDATE);
+    CHECK(!strcmp(r.version, "0.5.2-alpha.5"));
+    CHECK(!strcmp(r.tag, "v0.5.2-alpha.5"));
+    CHECK(!strcmp(r.zip_name, "SavageWind-0.5.2-alpha.5-windows.zip"));
+    CHECK(!strcmp(r.zip_url, "https://example.test/0.5.2-alpha.5.zip"));
+    CHECK(!strcmp(r.sig_url, "https://example.test/0.5.2-alpha.5.sig"));
+    CHECK(!strcmp(r.digest, H64));
+    CHECK(r.zip_size == 1000);
+    CHECK(unsig == 0);
+    CHECK(uc_pick_release(newest_first, "0.5.2-alpha.5", "-windows.zip", true, &r, NULL) == UC_PICK_CURRENT);
+    CHECK(uc_pick_release(newest_first, "9.0.0", "-windows.zip", true, &r, NULL) == UC_PICK_CURRENT);
+
+    static const char oldest_first[] =
+        "[" RELEASE("v0.5.1-alpha.5", "false", ZIP("0.5.1-alpha.5") "," SIG("0.5.1-alpha.5")) ","
+            RELEASE("v0.6.0-alpha.6", "false", ZIP("0.6.0-alpha.6") "," SIG("0.6.0-alpha.6")) "]";
+    CHECK(uc_pick_release(oldest_first, "0.5.0-alpha.5", "-windows.zip", true, &r, NULL) == UC_PICK_UPDATE);
+    CHECK(!strcmp(r.version, "0.6.0-alpha.6"));
+
+    static const char passed_over[] =
+        "[" RELEASE("v0.9.0-alpha.9", "true", ZIP("0.9.0-alpha.9") "," SIG("0.9.0-alpha.9")) ","
+            RELEASE("nightly", "false", ZIP("nightly") "," SIG("nightly")) ","
+            RELEASE("v0.8.0-alpha.8", "false", ASSET("Savage_Wind-0.8.0-alpha.8-x86_64.AppImage", "https://example.test/a", 5)) ","
+            RELEASE("v0.7.0-alpha.7", "false", ZIP("0.7.0-alpha.7")) ","
+            RELEASE("v0.5.1-alpha.5", "false", ZIP("0.5.1-alpha.5") "," SIG("0.5.1-alpha.5")) "]";
+    CHECK(uc_pick_release(passed_over, "0.5.0-alpha.5", "-windows.zip", true, &r, &unsig) == UC_PICK_UPDATE);
+    CHECK(!strcmp(r.version, "0.5.1-alpha.5"));
+    CHECK(unsig == 1);
+
+    CHECK(uc_pick_release("[]", "0.5.0-alpha.5", "-windows.zip", true, &r, NULL) == UC_PICK_CURRENT);
+    CHECK(uc_pick_release("", "0.5.0-alpha.5", "-windows.zip", true, &r, NULL) == UC_PICK_BAD_JSON);
+    CHECK(uc_pick_release("<html>Rate limited</html>", "0.5.0-alpha.5", "-windows.zip", true, &r, NULL) == UC_PICK_BAD_JSON);
+    CHECK(uc_pick_release("{\"message\":\"Not Found\"}", "0.5.0-alpha.5", "-windows.zip", true, &r, NULL) == UC_PICK_BAD_JSON);
+    CHECK(uc_pick_release("[{\"tag_name\":\"v1.0.0\"", "0.5.0-alpha.5", "-windows.zip", true, &r, NULL) == UC_PICK_BAD_JSON);
+    CHECK(uc_pick_release("[{\"tag_name\":\"v1.0.0\",}]", "0.5.0-alpha.5", "-windows.zip", true, &r, NULL) == UC_PICK_BAD_JSON);
+    static char deep[4096];
+    memset(deep, '[', sizeof deep - 1);
+    CHECK(uc_pick_release(deep, "0.5.0-alpha.5", "-windows.zip", true, &r, NULL) == UC_PICK_BAD_JSON);
+}
+
+static void paths(void) {
+    CHECK(uc_path_safe("savagewind.exe"));
+    CHECK(uc_path_safe("zig/lib/std/os.zig"));
+    CHECK(uc_path_safe("SW Update.exe"));
+    CHECK(uc_path_safe("colour-luts/a.cube"));
+    CHECK(uc_path_safe("console.txt"));  // (only the exact name is reserved)
+    CHECK(uc_path_safe("com.txt"));
+    CHECK(!uc_path_safe(""));
+    CHECK(!uc_path_safe("/etc/passwd"));
+    CHECK(!uc_path_safe("../evil.exe"));
+    CHECK(!uc_path_safe("a/../../evil.exe"));
+    CHECK(!uc_path_safe("a/./b"));
+    CHECK(!uc_path_safe("a//b"));
+    CHECK(!uc_path_safe("a/"));
+    CHECK(!uc_path_safe("a\\b"));
+    CHECK(!uc_path_safe("..\\evil.exe"));
+    CHECK(!uc_path_safe("C:/Windows/evil.exe"));
+    CHECK(!uc_path_safe("file.txt:stream"));
+    CHECK(!uc_path_safe("NUL"));
+    CHECK(!uc_path_safe("nul.txt"));
+    CHECK(!uc_path_safe("a/COM1/b"));
+    CHECK(!uc_path_safe("lpt9.log"));
+    CHECK(!uc_path_safe("trailing."));
+    CHECK(!uc_path_safe("trailing "));
+    CHECK(!uc_path_safe("what?.exe"));
+    CHECK(!strcmp(uc_strip_top("SuperWonders/game-build/gamebuild.py"), "game-build/gamebuild.py"));
+    CHECK(!uc_strip_top("SuperWonders/"));
+    CHECK(!uc_strip_top("Other/zig.exe"));
+    CHECK(!uc_strip_top("savagewind.exe"));
+}
+
+static void manifests(void) {
+    UcManifest m;
+    char why[120];
+    static const char good[] =
+        "superwonders-update-manifest 1\r\nversion 0.5.1-alpha.5\n"
+        "f " H64 " 12 savagewind.exe\nf " H64 " 0 zig/lib/empty file.txt\n";
+    CHECK(uc_manifest_parse(good, &m, why, sizeof why));
+    CHECK(m.count == 2);
+    CHECK(!strcmp(m.version, "0.5.1-alpha.5"));
+    CHECK(m.files[0].size == 12);
+    CHECK(!strcmp(m.files[1].path, "zig/lib/empty file.txt"));
+    CHECK(uc_manifest_find(&m, "SAVAGEWIND.EXE") != NULL);
+    CHECK(uc_manifest_find(&m, "savagewind.ex") == NULL);
+    CHECK(uc_manifest_find(&m, "zig/lib/empty") == NULL);
+    uc_manifest_free(&m);
+
+    static const char *const bad[] = {
+        "",
+        "hello\n",
+        "superwonders-update-manifest 2\nversion 0.5.1\nf " H64 " 1 a\n",
+        "superwonders-update-manifest 1\nf " H64 " 1 a\n",
+        "superwonders-update-manifest 1\nversion nope\nf " H64 " 1 a\n",
+        "superwonders-update-manifest 1\nversion 0.5.1\n",
+        "superwonders-update-manifest 1\nversion 0.5.1\nf abc 1 a\n",
+        "superwonders-update-manifest 1\nversion 0.5.1\nf " H64 " x a\n",
+        "superwonders-update-manifest 1\nversion 0.5.1\nf " H64 " 1\n",
+        "superwonders-update-manifest 1\nversion 0.5.1\nf " H64 " 1 ../evil.exe\n",
+        "superwonders-update-manifest 1\nversion 0.5.1\nf " H64 " 1 C:/evil.exe\n",
+        "superwonders-update-manifest 1\nversion 0.5.1\nf " H64 " 1 a\nf " H64 " 1 A\n",
+        "superwonders-update-manifest 1\nversion 0.5.1\nwhat is this\n",
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+        why[0] = 0;
+        if (uc_manifest_parse(bad[i], &m, why, sizeof why)) { printf("FAILED: bad manifest %d accepted\n", (int)i); fails++; }
+        else CHECK(why[0]);
+    }
+}
+
+// A signature made with openssl (tools/sign_update.py) over "savage wind test vector"
+#define TV_PUB "a5c179244b1d44abe6005b0157ad01948b76ac78f462cdced1c3187ea51dbd349a791b854a6451c83de7953786eed112b439eea9a4ea9d08ee377223427ddcb8"
+#define TV_SIG "60a93460ab42565d2c131c39a7adc90496444140547c4f20a4762ae6d5f04018f6e26e87201d17a9b5d1f03da0d57c2662f655643234162d6f2b48cf542259d0"
+#define TV_HASH "d0be736eda79f98fa648fa79ac66b75f9273008f10d91ca17df977480165502e"
+
+static void crypto(void) {
+    uint8_t h[32], want[32], sig[64], pub[64], t[64];
+    UcSha256 c;
+    uc_sha256_init(&c);
+    uc_sha256_update(&c, "abc", 3);
+    uc_sha256_final(&c, h);
+    uc_hex_decode("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", want, 32);
+    CHECK(!memcmp(h, want, 32));
+    uc_sha256_init(&c);
+    uc_sha256_update(&c, "savage wind test vector", 23);
+    uc_sha256_final(&c, h);
+    uc_hex_decode(TV_HASH, want, 32);
+    CHECK(!memcmp(h, want, 32));
+
+    CHECK(uc_hex_decode(TV_SIG, sig, 64) && uc_hex_decode(TV_PUB, pub, 64));
+    CHECK(uc_p256_verify(want, sig, pub));
+    uint8_t bad[32];
+    memcpy(bad, want, 32);
+    bad[5] ^= 1;
+    CHECK(!uc_p256_verify(bad, sig, pub));
+    memcpy(t, sig, 64);
+    t[3] ^= 1;
+    CHECK(!uc_p256_verify(want, t, pub));
+    memcpy(t, sig, 64);
+    t[60] ^= 1;
+    CHECK(!uc_p256_verify(want, t, pub));
+    memcpy(t, pub, 64);
+    t[10] ^= 1;  // (not on the curve)
+    CHECK(!uc_p256_verify(want, sig, t));
+    memset(t, 0, 64);
+    CHECK(!uc_p256_verify(want, t, pub));  // r = s = 0
+    memset(t, 0xFF, 64);
+    CHECK(!uc_p256_verify(want, t, pub));  // r, s above the order
+}
+
+static void appimage_assets(void) {
+    UcRelease r;
+    static const char list[] =
+        "[" RELEASE("v0.5.2-alpha.5", "false",
+            ASSET("Savage_Wind-0.5.2-alpha.5-x86_64.AppImage", "https://example.test/x", 7) ","
+            ASSET("Savage_Wind-0.5.2-alpha.5-x86_64.AppImage.sig", "https://example.test/x.sig", 1) ","
+            ASSET("Savage_Wind-0.5.2-alpha.5-aarch64.AppImage", "https://example.test/a", 9) ","
+            ASSET("Savage_Wind-0.5.2-alpha.5-aarch64.AppImage.sig", "https://example.test/a.sig", 1) ","
+            ZIP("0.5.2-alpha.5")) "]";
+    CHECK(uc_pick_release(list, "0.5.1-alpha.5", "-x86_64.AppImage", true, &r, NULL) == UC_PICK_UPDATE);
+    CHECK(!strcmp(r.zip_url, "https://example.test/x") && !strcmp(r.sig_url, "https://example.test/x.sig") && r.zip_size == 7);
+    CHECK(uc_pick_release(list, "0.5.1-alpha.5", "-aarch64.AppImage", true, &r, NULL) == UC_PICK_UPDATE);
+    CHECK(!strcmp(r.zip_url, "https://example.test/a") && !strcmp(r.sig_url, "https://example.test/a.sig") && r.zip_size == 9);
+    CHECK(uc_pick_release(list, "0.5.1-alpha.5", "-windows.zip", true, &r, NULL) == UC_PICK_CURRENT);  // (no signature for the zip)
+}
+
+// The files a made-up folder has: "dir|name" entries
+static const char *g_files[8];
+static bool has_file(const char *dir, const char *name) {
+    char k[600];
+    snprintf(k, sizeof k, "%s|%s", dir, name);
+    for (int i = 0; g_files[i]; i++)
+        if (!strcmp(g_files[i], k)) return true;
+    return false;
+}
+#define FILES(...) do { const char *f_[] = {__VA_ARGS__, NULL}; memcpy(g_files, f_, sizeof f_); } while (0)
+#define INSTALLED(dir, up, rl) uc_launcher_installed(dir, up, has_file, rl)
+#define IS(x, want) CHECK((x) && !strcmp((x), want))
+
+static void launchers(void) {
+    const char *d = "D:\\Games\\Savage Wind", *u = "D:\\Games";
+    FILES("x|y");
+    CHECK(!INSTALLED(d, u, NULL));  // a plain folder: SW Update's
+    CHECK(!INSTALLED(d, u, ""));
+    CHECK(!INSTALLED(d, u, "0"));
+    IS(INSTALLED(d, u, "1"), "RecompLauncher");
+    FILES("D:\\Games\\Savage Wind|.quiver-version");
+    IS(INSTALLED(d, u, NULL), "Quiver Launcher");
+    FILES("D:\\Games|.quiver-version");  // (the zip's top folder kept)
+    IS(INSTALLED(d, u, NULL), "Quiver Launcher");
+    CHECK(!INSTALLED(d, "", NULL));  // (no folder above: nothing looked for there)
+    FILES("D:\\Games\\Savage Wind|version.txt");
+    IS(INSTALLED(d, u, NULL), "GitHub Launcher");
+    FILES("D:\\Games|version.txt");  // a lone version.txt above: anyone's
+    CHECK(!INSTALLED(d, u, NULL));
+    FILES("D:\\Games|version.txt", "D:\\Games|LastPlayed.txt");
+    IS(INSTALLED(d, u, NULL), "GitHub Launcher");
+    FILES("D:\\Games|version.txt", "D:\\Games|selected_executable.txt");
+    IS(INSTALLED(d, u, NULL), "GitHub Launcher");
+    FILES("x|y");
+    IS(INSTALLED("C:\\Recomp Library\\Savage Wind", "C:\\Recomp Library", NULL), "RecompLauncher");
+    IS(INSTALLED("/home/p/Games/Recomp Library/savage-wind", "/home/p/Games/Recomp Library", NULL), "RecompLauncher");
+    IS(INSTALLED("C:\\RECOMP LIBRARY", "C:", NULL), "RecompLauncher");
+    CHECK(!INSTALLED("C:\\My Recomp Library Backup\\Savage Wind", "C:\\My Recomp Library Backup", NULL));
+    CHECK(!INSTALLED("/home/p/Games/Savage Wind", "/home/p/Games", NULL));
+}
+
+static void inside(void) {
+    CHECK(uc_path_inside("/tmp/.mount_SavageAbc/usr/bin/savagewind", "/tmp/.mount_SavageAbc"));
+    CHECK(uc_path_inside("/tmp/.mount_SavageAbc/usr/bin/savagewind", "/tmp/.mount_SavageAbc/"));
+    CHECK(!uc_path_inside("/tmp/.mount_SavageAbcd/usr/bin/savagewind", "/tmp/.mount_SavageAbc"));  // (a longer name)
+    CHECK(!uc_path_inside("/home/p/src/SavageWindRecomp/build/savagewind", "/tmp/.mount_QuiverX"));  // inherited
+    CHECK(!uc_path_inside("/tmp/.mount_SavageAbc", "/tmp/.mount_SavageAbc"));
+    CHECK(!uc_path_inside("/usr/bin/savagewind", ""));
+}
+
+
+// SuperWonders: a signature is optional unless a key is built in; GitHub's digest is always needed; pre-releases
+// are only for a copy that is one.
+static void superwonders_rules(void) {
+    UcRelease r;
+    int skipped = -1;
+#define SWZ(v) ASSET("SuperWonders-v" v "-Windows-x64.zip", "https://example.test/" v ".zip", 1000)
+#define NODIGEST(v) "{\"name\":\"SuperWonders-v" v "-Windows-x64.zip\",\"browser_download_url\":\"https://example.test/n\",\"size\":5,\"digest\":null}"
+    static const char unsigned_list[] = "[" RELEASE("v0.3.1", "false", SWZ("0.3.1")) "]";
+    CHECK(uc_pick_release(unsigned_list, "0.3.0", "-Windows-x64.zip", false, &r, &skipped) == UC_PICK_UPDATE);
+    CHECK(!strcmp(r.version, "0.3.1") && !r.sig_url[0] && skipped == 0);
+    CHECK(uc_pick_release(unsigned_list, "0.3.0", "-Windows-x64.zip", true, &r, &skipped) == UC_PICK_CURRENT);
+    CHECK(skipped == 1);
+    static const char no_digest[] = "[" RELEASE("v0.3.2", "false", NODIGEST("0.3.2")) "," RELEASE("v0.3.1", "false", SWZ("0.3.1")) "]";
+    CHECK(uc_pick_release(no_digest, "0.3.0", "-Windows-x64.zip", false, &r, &skipped) == UC_PICK_UPDATE);
+    CHECK(!strcmp(r.version, "0.3.1") && skipped == 1);
+    static const char pre[] = "[" RELEASE("v0.4.0-beta.1", "false", SWZ("0.4.0-beta.1")) "," RELEASE("v0.3.1", "false", SWZ("0.3.1")) "]";
+    CHECK(uc_pick_release(pre, "0.3.0", "-Windows-x64.zip", false, &r, NULL) == UC_PICK_UPDATE);
+    CHECK(!strcmp(r.version, "0.3.1"));  // (a full release is never offered a pre-release)
+    CHECK(uc_pick_release(pre, "0.3.1-beta.2", "-Windows-x64.zip", false, &r, NULL) == UC_PICK_UPDATE);
+    CHECK(!strcmp(r.version, "0.4.0-beta.1"));
+    CHECK(uc_pick_release(pre, "0.3.1", "-Windows-x64.zip", false, &r, NULL) == UC_PICK_CURRENT);
+    CHECK(uc_pick_release(pre, "0.3.0", "-Linux-x64.tar.gz", false, &r, NULL) == UC_PICK_CURRENT);  // (no Linux file)
+}
+
+static bool none(const char *dir, const char *name) { (void)dir, (void)name; return false; }
+
+static void retro(void) {
+    CHECK(!strcmp(uc_launcher_installed("C:\\Users\\a\\AppData\\Local\\retcomm\\apps\\superwonders", "", none, ""),
+                  "Retro Launcher"));
+    CHECK(!strcmp(uc_launcher_installed("/home/a/.local/share/retcomm/apps/superwonders/SuperWonders",
+                                        "/home/a/.local/share/retcomm/apps/superwonders", none, NULL), "Retro Launcher"));
+    CHECK(!uc_launcher_installed("/home/a/retcomm-apps/superwonders", "", none, ""));
+    CHECK(!uc_launcher_installed("C:\\Games\\SuperWonders", "C:\\Games", none, "0"));
+}
+
+int main(void) {
+    superwonders_rules();
+    retro();
+    versions();
+    launchers();
+    inside();
+    crypto();
+    appimage_assets();
+    pick();
+    paths();
+    manifests();
+    printf(fails ? "update core: %d FAILED\n" : "update core: all passed\n", fails);
+    return fails != 0;
+}

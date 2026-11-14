@@ -295,6 +295,7 @@ bool window_minimized() { return !g_visible || !g_window; }
 
 void shader_compile_progress(uint64_t, uint64_t, bool) {}
 void overlay_game_interval(int) {}
+void overlay_game_speed(double) {}
 void overlay_presented(uint64_t) {}
 
 void screen_size(uint32_t& w, uint32_t& h) {

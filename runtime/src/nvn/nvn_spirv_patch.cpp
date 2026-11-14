@@ -506,6 +506,8 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
         return !(e && e[0] == '0');
     }();
     if (init_outputs && s->stage == ShaderStage::Vertex && init_vertex_outputs(code, next)) code.swap(next);
+    if (strip_unused_interlock(code, next)) code.swap(next);  // nvn_spirv_unused.cpp
+    if (s->stage == ShaderStage::Vertex && drop_unused_cull_distance(code, next)) code.swap(next);
     return code;
 }
 

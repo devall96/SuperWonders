@@ -43,6 +43,7 @@ struct ModuleInfo {
     size_t init_count;
     const uint64_t* fini_array;
     size_t fini_count;
+    uint64_t frame_step_offset;  // optional aligned runtime-owned data page; 0 when unused
 };
 
 constexpr uint32_t R_AARCH64_ABS64 = 257;

@@ -25,13 +25,14 @@ constexpr int kLanguageTop = 31;
 constexpr int kLanguageBottom = 66;
 constexpr int kLanguageItemHeight = 27;
 constexpr int kResolution[][2] = {{1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}};
-constexpr const wchar_t* kInternalResolution[][5] = {
-    {L"Original / Dynamic", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440"},
-    {L"Originale / dinamica", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440"},
-    {L"Original / Dynamisch", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440"},
-    {L"Originale / dynamique", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440"},
+constexpr const wchar_t* kInternalResolution[][7] = {
+    {L"Original / Dynamic", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440", L"3840 x 2160", L"Native (screen)"},
+    {L"Originale / dinamica", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440", L"3840 x 2160", L"Nativa (schermo)"},
+    {L"Original / Dynamisch", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440", L"3840 x 2160", L"Nativ (Bildschirm)"},
+    {L"Originale / dynamique", L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440", L"3840 x 2160", L"Native (écran)"},
 };
 constexpr const wchar_t* kLanguageNames[] = {L"English", L"Italiano", L"Deutsch", L"Français"};
+constexpr int kFrameCaps[] = {30, 60, 90, 120, 144};
 
 struct Labels {
     const wchar_t* title;
@@ -55,6 +56,7 @@ struct Labels {
     const wchar_t* standard_desc;
     const wchar_t* nintendo_desc;
     const wchar_t* restart_note;
+    const wchar_t* frame_cap;
     const wchar_t* system;
     const wchar_t* memory_limit;
     const wchar_t* low_vram;
@@ -66,22 +68,22 @@ constexpr Labels kLabels[] = {
      L"Internal resolution", L"Enable fullscreen", L"Exit fullscreen", L"Always on top: On", L"Always on top: Off",
       L"Game volume", L"Mute audio", L"Unmute audio", L"Game language", L"Restart the game to apply the language.", L"Button layout",
      L"A: bottom (A / Cross)     B: right (B / Circle)", L"A: right (B / Circle)     B: bottom (A / Cross)",
-     L"Internal resolution applies after restarting the game.", L"System", L"Process memory limit", L"Low VRAM profile", L"Restart the game to apply the texture profile."},
+     L"Internal resolution applies after restarting the game.", L"Frame rate cap", L"System", L"Memory cleanup threshold", L"Low VRAM profile", L"Restart the game to apply the texture profile."},
     {L"Impostazioni", L"F1 o Esc per chiudere", L"Video", L"Audio", L"Controlli", L"Overlay", L"Dimensione finestra / output",
      L"Risoluzione interna", L"Attiva schermo intero", L"Esci da schermo intero", L"Sempre in primo piano: sì",
       L"Sempre in primo piano: no", L"Volume gioco", L"Disattiva audio", L"Riattiva audio", L"Lingua del gioco", L"Riavvia il gioco per applicare la lingua.", L"Disposizione tasti",
      L"A: in basso (A / Croce)     B: a destra (B / Cerchio)", L"A: a destra (B / Cerchio)     B: in basso (A / Croce)",
-     L"La risoluzione interna si applica al riavvio.", L"Sistema", L"Limite memoria processo", L"Profilo VRAM ridotta", L"Riavvia il gioco per applicare il profilo texture."},
+     L"La risoluzione interna si applica al riavvio.", L"Limite FPS", L"Sistema", L"Soglia pulizia memoria", L"Profilo VRAM ridotta", L"Riavvia il gioco per applicare il profilo texture."},
     {L"Einstellungen", L"F1 oder Esc zum Schließen", L"Video", L"Audio", L"Steuerung", L"Overlay", L"Fenster- / Ausgabegröße",
      L"Interne Auflösung", L"Vollbild aktivieren", L"Vollbild beenden", L"Immer im Vordergrund: Ein",
       L"Immer im Vordergrund: Aus", L"Spiel-Lautstärke", L"Ton stummschalten", L"Ton einschalten", L"Spielsprache", L"Spiel zum Übernehmen neu starten.", L"Tastenbelegung",
      L"A: unten (A / Kreuz)     B: rechts (B / Kreis)", L"A: rechts (B / Kreis)     B: unten (A / Kreuz)",
-     L"Interne Auflösung wird nach Neustart übernommen.", L"System", L"Prozessspeicherlimit", L"Niedriger VRAM-Verbrauch", L"Spiel neu starten, um das Texturprofil anzuwenden."},
+     L"Interne Auflösung wird nach Neustart übernommen.", L"FPS-Begrenzung", L"System", L"Speicherbereinigungsschwelle", L"Niedriger VRAM-Verbrauch", L"Spiel neu starten, um das Texturprofil anzuwenden."},
     {L"Paramètres", L"F1 ou Échap pour fermer", L"Vidéo", L"Audio", L"Commandes", L"Overlay", L"Taille fenêtre / sortie",
      L"Résolution interne", L"Activer le plein écran", L"Quitter le plein écran", L"Toujours au premier plan : oui",
       L"Toujours au premier plan : non", L"Volume du jeu", L"Couper le son", L"Rétablir le son", L"Langue du jeu", L"Redémarrez le jeu pour appliquer la langue.", L"Disposition des touches",
      L"A : bas (A / Croix)     B : droite (B / Cercle)", L"A : droite (B / Cercle)     B : bas (A / Croix)",
-     L"La résolution interne s'applique après redémarrage.", L"Système", L"Limite mémoire du processus", L"Profil VRAM réduit", L"Redémarrez pour appliquer le profil de textures."},
+     L"La résolution interne s'applique après redémarrage.", L"Limite d’images/s", L"Système", L"Seuil de nettoyage mémoire", L"Profil VRAM réduit", L"Redémarrez pour appliquer le profil de textures."},
 };
 
 constexpr const wchar_t* kOverlayLabels[4][6] = {
@@ -196,15 +198,20 @@ void paint_video(HDC dc) {
 
     paint_text(dc, text.internal_resolution, RECT{44, 235, 385, 263}, RGB(214, 222, 238), 16);
     paint_arrow(dc, 270, kInternalResolution[std::clamp(g_state.language, 0, 3)]
-                                           [std::clamp(g_state.internal_resolution, 0, 4)]);
+                                           [std::clamp(g_state.internal_resolution, 0, 6)]);
 
-    rounded(dc, RECT{44, 326, 516, 370}, RGB(35, 43, 61), RGB(68, 81, 105));
-    paint_text(dc, g_state.fullscreen ? text.fullscreen_off : text.fullscreen_on, RECT{58, 326, 502, 370},
+    paint_text(dc, text.frame_cap, RECT{44, 300, 385, 328}, RGB(214, 222, 238), 16);
+    wchar_t cap[32];
+    std::swprintf(cap, 32, L"%d FPS", g_state.frame_cap);
+    paint_arrow(dc, 332, cap);
+
+    rounded(dc, RECT{44, 375, 516, 419}, RGB(35, 43, 61), RGB(68, 81, 105));
+    paint_text(dc, g_state.fullscreen ? text.fullscreen_off : text.fullscreen_on, RECT{58, 375, 502, 419},
                RGB(230, 235, 245), 15, DT_CENTER);
-    rounded(dc, RECT{44, 384, 516, 428}, RGB(35, 43, 61), RGB(68, 81, 105));
-    paint_text(dc, g_state.always_on_top ? text.topmost_on : text.topmost_off, RECT{58, 384, 502, 428},
+    rounded(dc, RECT{44, 430, 516, 474}, RGB(35, 43, 61), RGB(68, 81, 105));
+    paint_text(dc, g_state.always_on_top ? text.topmost_on : text.topmost_off, RECT{58, 430, 502, 474},
                RGB(230, 235, 245), 15, DT_CENTER);
-    paint_text(dc, text.restart_note, RECT{35, 449, 525, 480}, RGB(155, 169, 192), 12, DT_CENTER);
+    paint_text(dc, text.restart_note, RECT{35, 493, 525, 522}, RGB(155, 169, 192), 12, DT_CENTER);
 }
 
 void paint_audio(HDC dc) {
@@ -335,7 +342,7 @@ void paint_system(HDC dc) {
                             installed_gb, recommended);
     else wcscpy_s(guidance, L"System RAM could not be detected. Leave several GB for Windows and other apps.");
     paint_paragraph(dc, guidance, RECT{48, 232, 510, 302}, RGB(170, 187, 210), 14);
-    paint_paragraph(dc, L"This is a safety cap on Wonder's private process memory (system commit, which can include driver allocations). It is not a direct GPU VRAM limit. Raising it may avoid an early stop, but can let a memory leak consume more system resources.",
+    paint_paragraph(dc, L"When usage passes this threshold, Wonder asks Vulkan to release its unused reusable-image cache and keeps running. This is not a hard cap and cannot free textures the game is actively using. It is not a direct GPU VRAM limit.",
                     RECT{48, 306, 510, 382}, RGB(145, 162, 187), 13);
     rounded(dc, RECT{44, 397, 516, 443}, g_state.low_vram_profile ? RGB(43, 70, 105) : RGB(35, 43, 61),
             g_state.low_vram_profile ? RGB(102, 174, 255) : RGB(68, 81, 105));
@@ -560,10 +567,17 @@ LRESULT CALLBACK menu_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
                 const int count = int(std::size(kInternalResolution[0]));
                 g_state.internal_resolution = (g_state.internal_resolution + (x < 460 ? count - 1 : 1)) % count;
                 notify(true);
-            } else if (g_section == Section::Video && y >= 326 && y <= 370) {
+            } else if (g_section == Section::Video && y >= 332 && y <= 364 && x >= 416 && x <= 504) {
+                int index = 1;
+                for (int i = 0; i < int(std::size(kFrameCaps)); ++i)
+                    if (kFrameCaps[i] == g_state.frame_cap) index = i;
+                index = (index + (x < 460 ? int(std::size(kFrameCaps)) - 1 : 1)) % int(std::size(kFrameCaps));
+                g_state.frame_cap = kFrameCaps[index];
+                notify(true);
+            } else if (g_section == Section::Video && y >= 375 && y <= 419) {
                 g_state.fullscreen = !g_state.fullscreen;
                 notify(true);
-            } else if (g_section == Section::Video && y >= 384 && y <= 428) {
+            } else if (g_section == Section::Video && y >= 430 && y <= 474) {
                 g_state.always_on_top = !g_state.always_on_top;
                 notify(true);
             } else if (g_section == Section::Audio && y >= kSliderY - 12 && y <= kSliderY + 12 &&

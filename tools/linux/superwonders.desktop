@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=SuperWonders
+Comment=Super Mario Bros. Wonder, recompiled for PC (bring your own game files)
+Exec=wonder
+Icon=superwonders
+Categories=Game;
+Terminal=false
+Actions=Configuration;
+
+[Desktop Action Configuration]
+Name=SuperWonders Launcher
+Exec=wonder --config

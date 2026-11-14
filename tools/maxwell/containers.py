@@ -521,9 +521,12 @@ def extract(c, outdir, data, unique=False):
     Default: <id>.code.bin / <id>.ctrl.bin per stage. --unique: code_<hash>.bin / ctrl_<hash>.bin, each written
     once (variations share code heavily: the uber shader has 17,160 stages but 4,857 distinct code blocks).
     """
+    # Game data never goes into the repository: inside it, only under private/ (a player's data root elsewhere is fine:
+    # tools/setup_game.py).
     real = os.path.realpath(outdir)
-    if not real.startswith(os.path.realpath(os.path.join(REPO, "private")) + os.sep):
-        sys.exit(f"refusing to write outside private/: {outdir}")
+    repo = os.path.realpath(REPO)
+    if real.startswith(repo + os.sep) and not real.startswith(os.path.join(repo, "private") + os.sep):
+        sys.exit(f"refusing to write inside the repository outside private/: {outdir}")
     os.makedirs(real, exist_ok=True)
     written = set()
     with open(os.path.join(real, "manifest.tsv"), "w", newline="\n") as m:  # LF on Windows too

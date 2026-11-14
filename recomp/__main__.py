@@ -15,6 +15,7 @@ import os
 import time
 
 from . import analysis, emit, nso
+from .wonder_realtime import patch_wonder_realtime
 
 INSNS_PER_FILE = 12000
 
@@ -47,12 +48,18 @@ def main():
     ap.add_argument("--name", default="main")
     ap.add_argument("--base", default="0x4000000000")
     ap.add_argument("--only", nargs="*", default=None, help="only these function addresses (debug)")
+    ap.add_argument("--wonder-realtime", action="store_true",
+                    help="patch Wonder 1.0.0's frame-step calculation for real-time simulation")
     args = ap.parse_args()
     base = int(args.base, 0)
     name = args.name
 
     t = time.time()
     m = nso.load(args.nso, name)
+    if args.wonder_realtime:
+        if name != "main":
+            ap.error("--wonder-realtime applies only to the main module")
+        patch_wonder_realtime(m)
     an = analysis.analyze(m)
     print(f"analysis: {len(an.functions)} functions, {len(an.jump_tables)} jump tables ({time.time() - t:.1f}s)")
 
@@ -129,6 +136,7 @@ def write_table(path, m, an, e, name, base):
         out.write(f"    relocs, {len(m.relocs)},\n")
         out.write(f"    symbols, {len(m.symbols)},\n")
         out.write(f"    init_array, {len(m.init_array)}, fini_array, {len(m.fini_array)},\n")
+        out.write(f"    {getattr(m, 'frame_step_offset', 0):#x},\n")
         out.write("};\n")
 
 
